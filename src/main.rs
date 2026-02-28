@@ -1,8 +1,12 @@
 mod app;
 mod cli;
+pub mod config;
+pub mod db;
+pub mod grouping;
 pub mod mock;
 pub mod scanner;
 mod theme;
+pub mod tmux;
 pub mod types;
 mod ui;
 
