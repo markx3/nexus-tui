@@ -113,15 +113,6 @@ pub fn mock_tree() -> Vec<TreeNode> {
     ]
 }
 
-pub fn mock_selection() -> SelectionState {
-    SelectionState {
-        selected: Some(SelectionTarget::Session(
-            "a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string(),
-        )),
-        focused_panel: FocusPanel::Tree,
-    }
-}
-
 pub fn mock_tmux_windows() -> Vec<TmuxWindowInfo> {
     vec![
         TmuxWindowInfo {

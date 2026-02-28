@@ -130,7 +130,7 @@ impl Database {
                     s.token_usage.output_tokens,
                     s.subagent_count,
                     s.last_active,
-                    !s.is_complete as i32, // active = not yet completed
+                    0i32, // is_active is set at runtime by mark_active_sessions()
                 ])?;
             }
         }
@@ -214,13 +214,10 @@ impl Database {
 
     /// Build the full tree of groups and sessions for the UI.
     ///
-    /// 1. Fetch all groups ordered by `sort_order`.
-    /// 2. For each group, attach its assigned sessions.
-    /// 3. Collect remaining (unassigned) sessions into an "Ungrouped" node.
+    /// Uses a single JOIN query to fetch all grouped sessions, avoiding
+    /// per-group N+1 queries. Ungrouped sessions are fetched separately.
     pub fn get_tree(&self) -> Result<Vec<TreeNode>> {
-        let mut tree: Vec<TreeNode> = Vec::new();
-
-        // -- named groups -------------------------------------------------
+        // Fetch all groups
         let mut group_stmt = self.conn.prepare(
             "SELECT id, name, icon, sort_order FROM groups ORDER BY sort_order",
         )?;
@@ -236,8 +233,38 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
 
+        // Fetch ALL grouped sessions in one query
+        let mut sess_stmt = self.conn.prepare(
+            "SELECT sg.group_id, s.session_id, s.display_name, s.cwd, s.project_dir,
+                    s.git_branch, s.model, s.first_message, s.message_count,
+                    s.input_tokens, s.output_tokens, s.subagent_count,
+                    s.last_active, s.is_active
+             FROM sessions s
+             JOIN session_groups sg ON s.session_id = sg.session_id
+             ORDER BY sg.group_id, s.last_active DESC",
+        )?;
+
+        // Build a map: group_id -> Vec<TreeNode>
+        let mut group_children: std::collections::HashMap<i64, Vec<TreeNode>> =
+            std::collections::HashMap::new();
+        sess_stmt
+            .query_map([], |row| {
+                let gid: i64 = row.get(0)?;
+                let summary = row_to_summary_at(row, 1);
+                Ok((gid, summary))
+            })?
+            .filter_map(|r| r.ok())
+            .for_each(|(gid, summary)| {
+                group_children
+                    .entry(gid)
+                    .or_default()
+                    .push(TreeNode::Session(summary));
+            });
+
+        // Build tree from groups
+        let mut tree: Vec<TreeNode> = Vec::new();
         for (gid, gname, _icon) in &groups {
-            let children = self.sessions_for_group(*gid)?;
+            let children = group_children.remove(gid).unwrap_or_default();
             tree.push(TreeNode::Group(GroupNode {
                 id: *gid,
                 name: gname.clone(),
@@ -247,11 +274,11 @@ impl Database {
             }));
         }
 
-        // -- ungrouped sessions ------------------------------------------
+        // Ungrouped sessions
         let ungrouped = self.ungrouped_session_summaries()?;
         if !ungrouped.is_empty() {
             tree.push(TreeNode::Group(GroupNode {
-                id: 0, // sentinel for "Ungrouped"
+                id: 0,
                 name: "Ungrouped".to_string(),
                 icon: GroupIcon::Root,
                 children: ungrouped.into_iter().map(TreeNode::Session).collect(),
@@ -265,28 +292,6 @@ impl Database {
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
-
-    /// Fetch sessions assigned to a specific group.
-    fn sessions_for_group(&self, group_id: i64) -> Result<Vec<TreeNode>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.session_id, s.display_name, s.cwd, s.project_dir,
-                    s.git_branch, s.model, s.first_message, s.message_count,
-                    s.input_tokens, s.output_tokens, s.subagent_count,
-                    s.last_active, s.is_active
-             FROM sessions s
-             JOIN session_groups sg ON s.session_id = sg.session_id
-             WHERE sg.group_id = ?1
-             ORDER BY s.last_active DESC",
-        )?;
-
-        let rows: Vec<TreeNode> = stmt
-            .query_map(params![group_id], |row| Ok(row_to_summary(row)))?
-            .filter_map(|r| r.ok())
-            .map(TreeNode::Session)
-            .collect();
-
-        Ok(rows)
-    }
 
     /// Fetch sessions not assigned to any group.
     fn ungrouped_session_summaries(&self) -> Result<Vec<SessionSummary>> {
@@ -305,6 +310,25 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
 
+        Ok(rows)
+    }
+
+    /// Fetch all session cwds for ungrouped sessions.
+    pub fn get_ungrouped_session_cwds(&self) -> Result<Vec<(String, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.session_id, s.cwd FROM sessions s
+             WHERE s.session_id NOT IN (SELECT session_id FROM session_groups)
+             ORDER BY s.last_active DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
         Ok(rows)
     }
 
@@ -340,23 +364,30 @@ impl Database {
 // Free helpers
 // ---------------------------------------------------------------------------
 
-/// Map a rusqlite Row into a `SessionSummary`.
+/// Map a rusqlite Row into a `SessionSummary`, reading 13 columns starting at column 0.
 fn row_to_summary(row: &rusqlite::Row<'_>) -> SessionSummary {
-    let cwd_str: Option<String> = row.get(2).unwrap_or(None);
+    row_to_summary_at(row, 0)
+}
+
+/// Map a rusqlite Row into a `SessionSummary`, reading 13 columns starting at
+/// the given `start` offset. This allows reuse when the SELECT has prefix
+/// columns (e.g. a JOIN's group_id).
+fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
+    let cwd_str: Option<String> = row.get(start + 2).unwrap_or(None);
     SessionSummary {
-        session_id: row.get(0).unwrap_or_default(),
-        display_name: row.get(1).unwrap_or_default(),
+        session_id: row.get(start).unwrap_or_default(),
+        display_name: row.get(start + 1).unwrap_or_default(),
         cwd: cwd_str.map(std::path::PathBuf::from),
-        project_dir: row.get(3).unwrap_or_default(),
-        git_branch: row.get(4).unwrap_or(None),
-        model: row.get(5).unwrap_or(None),
-        first_message: row.get(6).unwrap_or(None),
-        message_count: row.get::<_, u32>(7).unwrap_or(0),
-        input_tokens: row.get::<_, u64>(8).unwrap_or(0),
-        output_tokens: row.get::<_, u64>(9).unwrap_or(0),
-        subagent_count: row.get::<_, u16>(10).unwrap_or(0),
-        last_active: row.get(11).unwrap_or_default(),
-        is_active: row.get::<_, i32>(12).unwrap_or(0) != 0,
+        project_dir: row.get(start + 3).unwrap_or_default(),
+        git_branch: row.get(start + 4).unwrap_or(None),
+        model: row.get(start + 5).unwrap_or(None),
+        first_message: row.get(start + 6).unwrap_or(None),
+        message_count: row.get::<_, u32>(start + 7).unwrap_or(0),
+        input_tokens: row.get::<_, u64>(start + 8).unwrap_or(0),
+        output_tokens: row.get::<_, u64>(start + 9).unwrap_or(0),
+        subagent_count: row.get::<_, u16>(start + 10).unwrap_or(0),
+        last_active: row.get(start + 11).unwrap_or_default(),
+        is_active: row.get::<_, i32>(start + 12).unwrap_or(0) != 0,
     }
 }
 

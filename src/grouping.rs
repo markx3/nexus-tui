@@ -15,21 +15,33 @@ pub fn apply_rules(rules: &[AutoGroupRule], db: &Database) -> Result<usize> {
         return Ok(0);
     }
 
-    let unassigned = db.get_ungrouped_sessions()?;
+    // Pre-fetch all ungrouped session cwds in one query
+    let sessions_with_cwds = db.get_ungrouped_session_cwds()?;
+
+    // Cache group IDs by name to avoid repeated lookups
+    let mut group_cache: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+
     let mut assigned_count: usize = 0;
 
-    for session_id in &unassigned {
-        let cwd = match db.get_session_cwd(session_id)? {
+    for (session_id, cwd_opt) in &sessions_with_cwds {
+        let cwd = match cwd_opt {
             Some(c) => c,
             None => continue,
         };
 
         for rule in rules {
-            if glob_match(&rule.pattern, &cwd) {
-                // Find or create the target group
-                let group_id = match db.get_group_id_by_name(&rule.group)? {
-                    Some(id) => id,
-                    None => db.create_group(&rule.group, "")?,
+            if glob_match(&rule.pattern, cwd) {
+                let group_id = match group_cache.get(&rule.group) {
+                    Some(&id) => id,
+                    None => {
+                        let id = match db.get_group_id_by_name(&rule.group)? {
+                            Some(id) => id,
+                            None => db.create_group(&rule.group, "")?,
+                        };
+                        group_cache.insert(rule.group.clone(), id);
+                        id
+                    }
                 };
 
                 db.assign_session_to_group(session_id, group_id)?;

@@ -30,22 +30,23 @@ pub enum FocusPanel {
     Radar,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GroupNode {
     pub id: GroupId,
     pub name: String,
     pub icon: GroupIcon,
     pub children: Vec<TreeNode>,
+    #[serde(skip)]
     pub collapsed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum TreeNode {
     Group(GroupNode),
     Session(SessionSummary),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionSummary {
     pub session_id: SessionId,
     pub display_name: String,
@@ -62,13 +63,13 @@ pub struct SessionSummary {
     pub is_active: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum GroupIcon {
     Root,
     SubGroup,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TmuxWindowInfo {
     pub session_id: SessionId,
     pub window_name: String,
@@ -76,7 +77,7 @@ pub struct TmuxWindowInfo {
     pub status: TmuxSessionStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum TmuxSessionStatus {
     Running,
     Idle,
