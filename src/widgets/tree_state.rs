@@ -5,20 +5,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::types::{GroupIcon, GroupId, SelectionTarget, SessionSummary, TreeNode};
 
 // ---------------------------------------------------------------------------
-// Input mode
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TreeInputMode {
-    Normal,
-    Search,
-    CreateGroup,
-    Rename,
-    MoveMode,
-    ConfirmDelete,
-}
-
-// ---------------------------------------------------------------------------
 // Actions emitted by key handling
 // ---------------------------------------------------------------------------
 
@@ -26,13 +12,6 @@ pub enum TreeInputMode {
 pub enum TreeAction {
     Select(SelectionTarget),
     ToggleExpand(GroupId),
-    EnterSearch,
-    ExitSearch,
-    StartCreate,
-    StartRename,
-    StartMove,
-    ConfirmDelete,
-    CancelAction,
     ScrollUp,
     ScrollDown,
 }
@@ -62,15 +41,56 @@ pub enum FlatNodeKind {
 }
 
 // ---------------------------------------------------------------------------
+// Free function: flatten tree into visible nodes
+// ---------------------------------------------------------------------------
+
+fn flatten_tree(
+    nodes: &[TreeNode],
+    expanded: &HashSet<GroupId>,
+    depth: u16,
+    out: &mut Vec<FlatNode>,
+) {
+    for node in nodes {
+        match node {
+            TreeNode::Group(g) => {
+                let is_expanded = expanded.contains(&g.id);
+                out.push(FlatNode {
+                    depth,
+                    node: FlatNodeKind::Group {
+                        id: g.id,
+                        name: g.name.clone(),
+                        icon: g.icon,
+                        child_count: g.children.len(),
+                        collapsed: !is_expanded,
+                    },
+                });
+                if is_expanded {
+                    flatten_tree(&g.children, expanded, depth + 1, out);
+                }
+            }
+            TreeNode::Session(s) => {
+                out.push(FlatNode {
+                    depth,
+                    node: FlatNodeKind::Session {
+                        summary: s.clone(),
+                    },
+                });
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TreeState
 // ---------------------------------------------------------------------------
 
 pub struct TreeState {
     pub cursor_index: usize,
     pub expanded: HashSet<GroupId>,
-    pub search_query: String,
-    pub input_mode: TreeInputMode,
     pub scroll_offset: usize,
+    // Internal cache for visible nodes (Todo 014)
+    cached_flat: Vec<FlatNode>,
+    cache_valid: bool,
 }
 
 impl TreeState {
@@ -78,13 +98,15 @@ impl TreeState {
     pub fn new(tree: &[TreeNode]) -> Self {
         let mut expanded = HashSet::new();
         Self::collect_group_ids(tree, &mut expanded);
-        Self {
+        let mut state = Self {
             cursor_index: 0,
             expanded,
-            search_query: String::new(),
-            input_mode: TreeInputMode::Normal,
             scroll_offset: 0,
-        }
+            cached_flat: Vec::new(),
+            cache_valid: false,
+        };
+        state.ensure_cache(tree);
+        state
     }
 
     /// Recursively collect all group IDs so they start expanded.
@@ -97,47 +119,36 @@ impl TreeState {
         }
     }
 
-    /// Flatten the tree into a list of visible nodes, respecting collapsed state.
-    pub fn visible_nodes(&self, tree: &[TreeNode]) -> Vec<FlatNode> {
-        let mut out = Vec::new();
-        self.flatten(tree, 0, &mut out);
-        out
+    /// Recompute the flat node cache if it has been invalidated.
+    fn ensure_cache(&mut self, tree: &[TreeNode]) {
+        if !self.cache_valid {
+            self.cached_flat.clear();
+            flatten_tree(tree, &self.expanded, 0, &mut self.cached_flat);
+            self.cache_valid = true;
+        }
     }
 
-    fn flatten(&self, nodes: &[TreeNode], depth: u16, out: &mut Vec<FlatNode>) {
-        for node in nodes {
-            match node {
-                TreeNode::Group(g) => {
-                    let is_expanded = self.expanded.contains(&g.id);
-                    out.push(FlatNode {
-                        depth,
-                        node: FlatNodeKind::Group {
-                            id: g.id,
-                            name: g.name.clone(),
-                            icon: g.icon,
-                            child_count: g.children.len(),
-                            collapsed: !is_expanded,
-                        },
-                    });
-                    if is_expanded {
-                        self.flatten(&g.children, depth + 1, out);
-                    }
-                }
-                TreeNode::Session(s) => {
-                    out.push(FlatNode {
-                        depth,
-                        node: FlatNodeKind::Session {
-                            summary: s.clone(),
-                        },
-                    });
-                }
-            }
+    /// Mark the cache as stale so it will be recomputed on next access.
+    pub fn invalidate_cache(&mut self) {
+        self.cache_valid = false;
+    }
+
+    /// Flatten the tree into a list of visible nodes, respecting collapsed state.
+    /// This returns a freshly computed Vec (backward-compatible for external callers).
+    pub fn visible_nodes(&self, tree: &[TreeNode]) -> Vec<FlatNode> {
+        // If cache is valid, clone from cache to avoid recomputing
+        if self.cache_valid {
+            return self.cached_flat.clone();
         }
+        let mut out = Vec::new();
+        flatten_tree(tree, &self.expanded, 0, &mut out);
+        out
     }
 
     /// Move cursor up, wrapping around to the bottom.
     pub fn move_cursor_up(&mut self, tree: &[TreeNode]) {
-        let count = self.visible_nodes(tree).len();
+        self.ensure_cache(tree);
+        let count = self.cached_flat.len();
         if count == 0 {
             return;
         }
@@ -150,7 +161,8 @@ impl TreeState {
 
     /// Move cursor down, wrapping around to the top.
     pub fn move_cursor_down(&mut self, tree: &[TreeNode]) {
-        let count = self.visible_nodes(tree).len();
+        self.ensure_cache(tree);
+        let count = self.cached_flat.len();
         if count == 0 {
             return;
         }
@@ -164,12 +176,13 @@ impl TreeState {
         } else {
             self.expanded.insert(group_id);
         }
+        self.invalidate_cache();
     }
 
     /// Get the selection target at the current cursor position.
-    pub fn selected_target(&self, tree: &[TreeNode]) -> Option<SelectionTarget> {
-        let flat = self.visible_nodes(tree);
-        flat.get(self.cursor_index).map(|n| match &n.node {
+    pub fn selected_target(&mut self, tree: &[TreeNode]) -> Option<SelectionTarget> {
+        self.ensure_cache(tree);
+        self.cached_flat.get(self.cursor_index).map(|n| match &n.node {
             FlatNodeKind::Group { id, .. } => SelectionTarget::Group(*id),
             FlatNodeKind::Session { summary } => {
                 SelectionTarget::Session(summary.session_id.clone())
@@ -179,12 +192,7 @@ impl TreeState {
 
     /// Handle a key event, returning an optional action.
     pub fn handle_key(&mut self, key: KeyEvent, tree: &[TreeNode]) -> Option<TreeAction> {
-        match self.input_mode {
-            TreeInputMode::Normal => self.handle_normal_key(key, tree),
-            TreeInputMode::Search => self.handle_search_key(key),
-            TreeInputMode::ConfirmDelete => self.handle_confirm_delete_key(key),
-            _ => self.handle_modal_key(key),
-        }
+        self.handle_normal_key(key, tree)
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent, tree: &[TreeNode]) -> Option<TreeAction> {
@@ -198,12 +206,13 @@ impl TreeState {
                 Some(TreeAction::ScrollUp)
             }
             KeyCode::Enter => {
-                let flat = self.visible_nodes(tree);
-                if let Some(node) = flat.get(self.cursor_index) {
+                self.ensure_cache(tree);
+                if let Some(node) = self.cached_flat.get(self.cursor_index) {
                     match &node.node {
                         FlatNodeKind::Group { id, .. } => {
-                            self.toggle_expand(*id);
-                            Some(TreeAction::ToggleExpand(*id))
+                            let gid = *id;
+                            self.toggle_expand(gid);
+                            Some(TreeAction::ToggleExpand(gid))
                         }
                         FlatNodeKind::Session { summary } => {
                             let target =
@@ -214,74 +223,6 @@ impl TreeState {
                 } else {
                     None
                 }
-            }
-            KeyCode::Char('/') => {
-                self.input_mode = TreeInputMode::Search;
-                self.search_query.clear();
-                Some(TreeAction::EnterSearch)
-            }
-            KeyCode::Char('n') => {
-                self.input_mode = TreeInputMode::CreateGroup;
-                Some(TreeAction::StartCreate)
-            }
-            KeyCode::Char('r') => {
-                self.input_mode = TreeInputMode::Rename;
-                Some(TreeAction::StartRename)
-            }
-            KeyCode::Char('m') => {
-                self.input_mode = TreeInputMode::MoveMode;
-                Some(TreeAction::StartMove)
-            }
-            KeyCode::Char('d') => {
-                self.input_mode = TreeInputMode::ConfirmDelete;
-                Some(TreeAction::ConfirmDelete)
-            }
-            KeyCode::Esc => Some(TreeAction::CancelAction),
-            _ => None,
-        }
-    }
-
-    fn handle_search_key(&mut self, key: KeyEvent) -> Option<TreeAction> {
-        match key.code {
-            KeyCode::Esc => {
-                self.input_mode = TreeInputMode::Normal;
-                self.search_query.clear();
-                Some(TreeAction::ExitSearch)
-            }
-            KeyCode::Enter => {
-                self.input_mode = TreeInputMode::Normal;
-                Some(TreeAction::ExitSearch)
-            }
-            KeyCode::Char(c) => {
-                self.search_query.push(c);
-                None
-            }
-            KeyCode::Backspace => {
-                self.search_query.pop();
-                None
-            }
-            _ => None,
-        }
-    }
-
-    fn handle_confirm_delete_key(&mut self, key: KeyEvent) -> Option<TreeAction> {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => {
-                self.input_mode = TreeInputMode::Normal;
-                Some(TreeAction::ConfirmDelete)
-            }
-            _ => {
-                self.input_mode = TreeInputMode::Normal;
-                Some(TreeAction::CancelAction)
-            }
-        }
-    }
-
-    fn handle_modal_key(&mut self, key: KeyEvent) -> Option<TreeAction> {
-        match key.code {
-            KeyCode::Esc => {
-                self.input_mode = TreeInputMode::Normal;
-                Some(TreeAction::CancelAction)
             }
             _ => None,
         }
@@ -443,5 +384,35 @@ mod tests {
         let action = state.handle_key(key, &tree);
         assert_eq!(action, Some(TreeAction::ToggleExpand(1)));
         assert!(!state.expanded.contains(&1));
+    }
+
+    #[test]
+    fn test_cache_invalidated_on_toggle() {
+        let tree = mock::mock_tree();
+        let mut state = TreeState::new(&tree);
+
+        // Cache starts valid after new()
+        assert!(state.cache_valid);
+
+        // Toggle invalidates
+        state.toggle_expand(1);
+        assert!(!state.cache_valid);
+
+        // ensure_cache rebuilds
+        state.ensure_cache(&tree);
+        assert!(state.cache_valid);
+        assert_eq!(state.cached_flat.len(), 7); // nexus collapsed: 9-2=7
+    }
+
+    #[test]
+    fn test_visible_nodes_uses_cache_when_valid() {
+        let tree = mock::mock_tree();
+        let state = TreeState::new(&tree);
+
+        // cache_valid should be true after new()
+        assert!(state.cache_valid);
+
+        let flat = state.visible_nodes(&tree);
+        assert_eq!(flat.len(), 9);
     }
 }
