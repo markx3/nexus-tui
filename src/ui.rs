@@ -5,7 +5,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use tachyonfx::{fx, Effect, EffectRenderer, Motion};
+use tachyonfx::EffectRenderer;
 
 use crate::app::App;
 use crate::theme;
@@ -56,10 +56,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     draw_detail(frame, detail_area);
     draw_activity_strip(frame, bottom_strip);
 
-    // Apply TachyonFX boot effects
-    let zones = [top_bar, left_panel, radar_area, detail_area, bottom_strip];
-    for (effect, &zone) in app.boot_effects.iter_mut().zip(zones.iter()) {
-        frame.render_effect(effect, zone, elapsed.into());
+    // Apply TachyonFX boot effects (skip once done)
+    if !app.boot_done {
+        let zones = [top_bar, left_panel, radar_area, detail_area, bottom_strip];
+        for (effect, &zone) in app.boot_effects.iter_mut().zip(zones.iter()) {
+            frame.render_effect(effect, zone, elapsed.into());
+        }
+        if app.boot_effects.iter().all(|e| e.done()) {
+            app.boot_done = true;
+            app.boot_effects.clear();
+        }
     }
 }
 
@@ -151,15 +157,4 @@ fn draw_activity_strip(frame: &mut Frame, area: Rect) {
         .block(block);
 
     frame.render_widget(content, area);
-}
-
-pub fn create_boot_effects() -> Vec<Effect> {
-    let bg = theme::BG;
-    vec![
-        fx::sweep_in(Motion::LeftToRight, 15, 0, bg, 400u32),
-        fx::sweep_in(Motion::LeftToRight, 15, 0, bg, 500u32),
-        fx::sweep_in(Motion::LeftToRight, 15, 0, bg, 500u32),
-        fx::sweep_in(Motion::LeftToRight, 15, 0, bg, 400u32),
-        fx::sweep_in(Motion::LeftToRight, 15, 0, bg, 300u32),
-    ]
 }

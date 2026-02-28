@@ -20,19 +20,22 @@ fn main() -> Result<()> {
 
 fn acquire_lock() -> Result<fslock::LockFile> {
     let lock_dir = dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "Cannot determine cache directory. Set XDG_CACHE_HOME or HOME."
+            )
+        })?
         .join("nexus");
     std::fs::create_dir_all(&lock_dir)?;
 
     let mut lock = fslock::LockFile::open(&lock_dir.join("nexus.lock"))?;
 
     if !lock.try_lock()? {
-        eprintln!("nexus: another instance is already running");
-        eprintln!(
-            "  If this is a stale lock, remove: {}",
+        color_eyre::eyre::bail!(
+            "Another nexus instance is already running.\n  \
+             If this is a stale lock, remove: {}",
             lock_dir.join("nexus.lock").display()
         );
-        std::process::exit(1);
     }
 
     Ok(lock)
