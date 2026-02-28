@@ -9,6 +9,10 @@ use tachyonfx::EffectRenderer;
 
 use crate::app::App;
 use crate::theme;
+use crate::types::*;
+use crate::widgets;
+use crate::widgets::radar_state::RadarState;
+use crate::widgets::tree_state::TreeState;
 
 pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     let area = frame.area();
@@ -51,8 +55,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 
     // Render each zone
     draw_top_bar(frame, top_bar);
-    draw_session_tree(frame, left_panel);
-    draw_radar(frame, radar_area);
+    draw_session_tree(
+        frame,
+        left_panel,
+        &app.tree_state,
+        &app.mock_tree,
+        app.selection.focused_panel == FocusPanel::Tree,
+    );
+    draw_radar(
+        frame,
+        radar_area,
+        &app.radar_state,
+        app.selection.focused_panel == FocusPanel::Radar,
+    );
     draw_detail(frame, detail_area);
     draw_activity_strip(frame, bottom_strip);
 
@@ -90,39 +105,18 @@ fn draw_top_bar(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_session_tree(frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .title(Span::styled(
-            " SESSION TREE ",
-            Style::new().fg(theme::NEON_CYAN),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::NEON_CYAN))
-        .style(Style::new().bg(theme::SURFACE));
-
-    let content = Paragraph::new("No sessions loaded")
-        .style(Style::new().fg(theme::DIM))
-        .block(block);
-
-    frame.render_widget(content, area);
+fn draw_session_tree(
+    frame: &mut Frame,
+    area: Rect,
+    tree_state: &TreeState,
+    tree: &[TreeNode],
+    focused: bool,
+) {
+    widgets::tree::render_tree(frame, area, tree, tree_state, focused);
 }
 
-fn draw_radar(frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .title(Span::styled(
-            " SESSION RADAR ",
-            Style::new().fg(theme::NEON_CYAN),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::DIM))
-        .style(Style::new().bg(theme::SURFACE));
-
-    let content = Paragraph::new("\u{25c9}")
-        .style(Style::new().fg(theme::NEON_CYAN))
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(block);
-
-    frame.render_widget(content, area);
+fn draw_radar(frame: &mut Frame, area: Rect, radar_state: &RadarState, focused: bool) {
+    widgets::radar::render_radar(frame, area, radar_state, focused);
 }
 
 fn draw_detail(frame: &mut Frame, area: Rect) {
