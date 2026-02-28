@@ -1,18 +1,15 @@
 use std::time::Duration;
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 use tachyonfx::EffectRenderer;
 
 use crate::app::App;
-use crate::mock;
 use crate::theme;
 use crate::types::*;
 use crate::widgets;
-use crate::widgets::radar_state::RadarState;
-use crate::widgets::tree_state::TreeState;
 
 pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     let area = frame.area();
@@ -53,23 +50,34 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     ])
     .areas(right_column);
 
-    // Render each zone
-    draw_top_bar(frame, top_bar);
-    draw_session_tree(
+    // Render each zone with real state
+    let (session_count, active_count) = app.session_counts();
+    widgets::top_bar::render_top_bar(frame, top_bar, session_count, active_count);
+
+    widgets::tree::render_tree(
         frame,
         left_panel,
+        &app.tree,
         &app.tree_state,
-        &app.mock_tree,
         app.selection.focused_panel == FocusPanel::Tree,
     );
-    draw_radar(
+
+    widgets::radar::render_radar(
         frame,
         radar_area,
         &app.radar_state,
         app.selection.focused_panel == FocusPanel::Radar,
     );
-    draw_detail(frame, detail_area);
-    draw_activity_strip(frame, bottom_strip);
+
+    let selected_session = app.selected_session();
+    widgets::detail::render_detail(
+        frame,
+        detail_area,
+        selected_session,
+        app.selection.focused_panel == FocusPanel::Radar, // detail focus follows radar
+    );
+
+    widgets::activity::render_activity_strip(frame, bottom_strip, &app.tmux_windows);
 
     // Apply TachyonFX boot effects (skip once done)
     if !app.boot_done {
@@ -82,47 +90,4 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
             app.boot_effects.clear();
         }
     }
-}
-
-fn draw_top_bar(frame: &mut Frame, area: Rect) {
-    widgets::top_bar::render_top_bar(frame, area, 5, 2);
-}
-
-fn draw_session_tree(
-    frame: &mut Frame,
-    area: Rect,
-    tree_state: &TreeState,
-    tree: &[TreeNode],
-    focused: bool,
-) {
-    widgets::tree::render_tree(frame, area, tree, tree_state, focused);
-}
-
-fn draw_radar(frame: &mut Frame, area: Rect, radar_state: &RadarState, focused: bool) {
-    widgets::radar::render_radar(frame, area, radar_state, focused);
-}
-
-fn draw_detail(frame: &mut Frame, area: Rect) {
-    let tree = mock::mock_tree();
-    let session = find_first_session(&tree);
-    widgets::detail::render_detail(frame, area, session.as_ref(), false);
-}
-
-fn find_first_session(tree: &[crate::types::TreeNode]) -> Option<SessionSummary> {
-    for node in tree {
-        match node {
-            crate::types::TreeNode::Session(s) => return Some(s.clone()),
-            crate::types::TreeNode::Group(g) => {
-                if let Some(s) = find_first_session(&g.children) {
-                    return Some(s);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn draw_activity_strip(frame: &mut Frame, area: Rect) {
-    let windows = mock::mock_tmux_windows();
-    widgets::activity::render_activity_strip(frame, area, &windows);
 }

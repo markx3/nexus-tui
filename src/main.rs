@@ -20,8 +20,53 @@ fn main() -> Result<()> {
     let _cli = cli::Cli::parse();
     let _lock = acquire_lock()?;
 
+    // Load config (defaults if missing)
+    let config = config::load_config()?;
+
+    // Init database
+    let db = db::Database::open(&config.general.db_path)?;
+    db.init_schema()?;
+
+    // Pre-defined groups from config
+    for group_def in &config.groups {
+        let icon = if group_def.icon.is_empty() {
+            "◈"
+        } else {
+            &group_def.icon
+        };
+        // Ignore duplicate errors — group may already exist
+        let _ = db.create_group(&group_def.name, icon);
+    }
+
+    // Scan sessions
+    let scan_result = scanner::scan_quick(&config.general.projects_dir)?;
+    db.upsert_sessions(&scan_result.sessions)?;
+
+    // Apply auto-grouping rules
+    if !config.auto_group.is_empty() {
+        grouping::apply_rules(&config.auto_group, &db)?;
+    }
+
+    // Build tree from DB
+    let tree = db.get_tree()?;
+
+    // Check tmux availability
+    let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
+    let tmux_available = tmux.is_available();
+    if tmux_available {
+        let _ = tmux.setup_keybindings();
+    }
+
+    // Initial tmux windows
+    let tmux_windows = if tmux_available {
+        tmux.list_windows().unwrap_or_default()
+    } else {
+        vec![]
+    };
+
     let terminal = ratatui::init();
-    let result = app::App::new().run(terminal);
+    let result =
+        app::App::new(config, tree, tmux, tmux_available, tmux_windows).run(terminal);
     ratatui::restore();
     result
 }
