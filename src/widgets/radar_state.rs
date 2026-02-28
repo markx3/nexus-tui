@@ -1,7 +1,7 @@
 use std::f64::consts::PI;
 
 use crate::types::TreeNode;
-use crate::widgets::tree::relative_time;
+use crate::time_utils::relative_time;
 
 // ---------------------------------------------------------------------------
 // Radar blip

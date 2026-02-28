@@ -87,11 +87,7 @@ pub fn render_detail(
 
     // First message (truncated, dim italic)
     if let Some(ref msg) = session.first_message {
-        let truncated = if msg.len() > inner_width.saturating_sub(2) {
-            format!("{}...", &msg[..inner_width.saturating_sub(5)])
-        } else {
-            msg.clone()
-        };
+        let truncated = crate::text_utils::truncate(msg, inner_width.saturating_sub(2));
         lines.push(Line::from(Span::styled(
             truncated,
             theme::style_for(ThemeElement::Dim).add_modifier(Modifier::ITALIC),
