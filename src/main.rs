@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+pub mod scanner;
 mod theme;
 mod ui;
 

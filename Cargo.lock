@@ -919,6 +919,8 @@ dependencies = [
  "dirs",
  "fslock",
  "ratatui",
+ "serde",
+ "serde_json",
  "tachyonfx",
 ]
 
