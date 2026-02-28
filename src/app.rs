@@ -32,6 +32,7 @@ impl App {
         while !self.should_quit {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_tick);
+            self.last_tick = now;
 
             if self.dirty || !self.boot_done {
                 terminal.draw(|frame| ui::draw(frame, &mut self, elapsed))?;
@@ -64,9 +65,7 @@ impl App {
                 }
             }
 
-            if self.last_tick.elapsed() >= TICK_RATE {
-                self.last_tick = Instant::now();
-            }
+            // Poll timeout already paces the loop to ~TICK_RATE
         }
 
         Ok(())
