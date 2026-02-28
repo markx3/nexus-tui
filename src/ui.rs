@@ -2,13 +2,16 @@ use std::time::Duration;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use tachyonfx::EffectRenderer;
 
 use crate::app::App;
+use crate::mock;
 use crate::theme;
+use crate::types::SessionSummary;
+use crate::widgets;
 
 pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     let area = frame.area();
@@ -70,24 +73,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 }
 
 fn draw_top_bar(frame: &mut Frame, area: Rect) {
-    let status = Line::from(vec![
-        Span::styled(" SYS:", Style::new().fg(theme::DIM)),
-        Span::styled("ONLINE", Style::new().fg(theme::ACID_GREEN)),
-        Span::styled(" \u{2550}\u{2550} ", Style::new().fg(theme::DIM)),
-        Span::styled("SESSIONS:", Style::new().fg(theme::DIM)),
-        Span::styled("--", Style::new().fg(theme::TEXT)),
-        Span::styled(" \u{2550}\u{2550} ", Style::new().fg(theme::DIM)),
-        Span::styled("ACTIVE:", Style::new().fg(theme::DIM)),
-        Span::styled("--", Style::new().fg(theme::TEXT)),
-    ]);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::NEON_CYAN))
-        .style(Style::new().bg(theme::SURFACE));
-
-    let paragraph = Paragraph::new(status).block(block);
-    frame.render_widget(paragraph, area);
+    widgets::top_bar::render_top_bar(frame, area, 5, 2);
 }
 
 fn draw_session_tree(frame: &mut Frame, area: Rect) {
@@ -126,35 +112,26 @@ fn draw_radar(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_detail(frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .title(Span::styled(
-            " DETAIL ",
-            Style::new().fg(theme::NEON_CYAN),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::DIM))
-        .style(Style::new().bg(theme::SURFACE));
+    let tree = mock::mock_tree();
+    let session = find_first_session(&tree);
+    widgets::detail::render_detail(frame, area, session.as_ref(), false);
+}
 
-    let content = Paragraph::new("Select a session to view details")
-        .style(Style::new().fg(theme::DIM))
-        .block(block);
-
-    frame.render_widget(content, area);
+fn find_first_session(tree: &[crate::types::TreeNode]) -> Option<SessionSummary> {
+    for node in tree {
+        match node {
+            crate::types::TreeNode::Session(s) => return Some(s.clone()),
+            crate::types::TreeNode::Group(g) => {
+                if let Some(s) = find_first_session(&g.children) {
+                    return Some(s);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn draw_activity_strip(frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .title(Span::styled(
-            " ACTIVITY ",
-            Style::new().fg(theme::NEON_CYAN),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::NEON_CYAN))
-        .style(Style::new().bg(theme::SURFACE));
-
-    let content = Paragraph::new("No active sessions")
-        .style(Style::new().fg(theme::DIM))
-        .block(block);
-
-    frame.render_widget(content, area);
+    let windows = mock::mock_tmux_windows();
+    widgets::activity::render_activity_strip(frame, area, &windows);
 }

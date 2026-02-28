@@ -5,6 +5,7 @@ pub mod scanner;
 mod theme;
 pub mod types;
 mod ui;
+pub mod widgets;
 
 use clap::Parser;
 use color_eyre::Result;
