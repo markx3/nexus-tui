@@ -256,15 +256,15 @@ Each zone's effect is rendered over its area. Effects self-expire — after ~800
 
 ## Acceptance Criteria
 
-- [ ] `cargo build` succeeds with all dependencies
-- [ ] `cargo run` renders the Tactical Deck with 5 labeled zones
-- [ ] Cyberpunk color palette visible (neon cyan borders on dark background)
-- [ ] Boot animation plays (zones sweep in left-to-right with stagger)
-- [ ] `q` exits cleanly (terminal fully restored)
-- [ ] `Ctrl+C` exits cleanly
-- [ ] Second instance prints "another instance is already running" and exits
-- [ ] Terminal too small (<80x24) shows a warning message instead of the layout
-- [ ] Panic during render restores terminal (test by adding a deliberate `panic!()`)
+- [x] `cargo build` succeeds with all dependencies
+- [x] `cargo run` renders the Tactical Deck with 5 labeled zones
+- [x] Cyberpunk color palette visible (neon cyan borders on dark background)
+- [x] Boot animation plays (zones sweep in left-to-right with stagger)
+- [x] `q` exits cleanly (terminal fully restored)
+- [x] `Ctrl+C` exits cleanly
+- [x] Second instance prints "another instance is already running" and exits
+- [x] Terminal too small (<80x24) shows a warning message instead of the layout
+- [x] Panic during render restores terminal (test by adding a deliberate `panic!()`)
 
 ## References
 

@@ -28,7 +28,7 @@ date: 2026-02-28
 
 | # | Task | Type | Independent | Status |
 |---|------|------|-------------|--------|
-| 01 | [Project Scaffold](01-project-scaffold.md) | Foundation | Start here | Pending |
+| 01 | [Project Scaffold](01-project-scaffold.md) | Foundation | Start here | Done |
 | 02 | [Session Scanner](02-session-scanner.md) | Library | Yes | Pending |
 | 03 | [Config & Persistence](03-config-and-persistence.md) | Library | Yes | Pending |
 | 04 | [Tmux Manager](04-tmux-manager.md) | Library | Yes | Pending |
