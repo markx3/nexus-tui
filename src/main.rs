@@ -1,7 +1,9 @@
 mod app;
 mod cli;
+pub mod mock;
 pub mod scanner;
 mod theme;
+pub mod types;
 mod ui;
 
 use clap::Parser;
