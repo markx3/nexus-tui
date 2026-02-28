@@ -16,6 +16,12 @@ pub struct TokenUsage {
 }
 
 #[derive(Debug)]
+pub struct ScanResult {
+    pub sessions: Vec<SessionInfo>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug)]
 pub struct SessionInfo {
     pub session_id: String,
     pub slug: Option<String>,
@@ -30,13 +36,14 @@ pub struct SessionInfo {
     pub subagent_count: u16,
     pub last_active: String,
     pub source_file: PathBuf,
+    pub is_complete: bool,
 }
 
-pub fn scan_quick(projects_dir: &Path) -> Result<Vec<SessionInfo>> {
+pub fn scan_quick(projects_dir: &Path) -> Result<ScanResult> {
     scan(projects_dir, ScanMode::Quick)
 }
 
-pub fn scan_full(projects_dir: &Path) -> Result<Vec<SessionInfo>> {
+pub fn scan_full(projects_dir: &Path) -> Result<ScanResult> {
     scan(projects_dir, ScanMode::Full)
 }
 
@@ -77,6 +84,11 @@ impl SessionBuilder {
         }
     }
 
+    /// Process a single JSONL entry, accumulating fields into the builder.
+    ///
+    /// Field update semantics:
+    /// - "first wins": cwd, slug, model, version (keep earliest value)
+    /// - "last wins": git_branch, last_timestamp (always update to latest)
     fn process_entry(&mut self, entry: &Value) {
         let entry_type = entry["type"].as_str().unwrap_or("");
 
@@ -100,6 +112,7 @@ impl SessionBuilder {
                         self.cwd = Some(PathBuf::from(cwd));
                     }
                 }
+                // Always update — branch may change mid-session ("last wins")
                 if let Some(branch) = entry["gitBranch"].as_str() {
                     self.git_branch = Some(branch.to_string());
                 }
@@ -197,6 +210,7 @@ impl SessionBuilder {
         subagent_count: u16,
         fallback_timestamp: String,
         source_file: PathBuf,
+        is_complete: bool,
     ) -> SessionInfo {
         SessionInfo {
             session_id: self.session_id,
@@ -212,28 +226,38 @@ impl SessionBuilder {
             subagent_count,
             last_active: self.last_timestamp.unwrap_or(fallback_timestamp),
             source_file,
+            is_complete,
         }
     }
 }
 
-fn scan(projects_dir: &Path, mode: ScanMode) -> Result<Vec<SessionInfo>> {
+fn scan(projects_dir: &Path, mode: ScanMode) -> Result<ScanResult> {
     if !projects_dir.exists() {
-        return Ok(vec![]);
+        return Ok(ScanResult { sessions: vec![], warnings: vec![] });
     }
 
     let mut sessions = Vec::new();
+    let mut warnings = Vec::new();
+    let is_complete = mode == ScanMode::Full;
 
     let project_entries = match fs::read_dir(projects_dir) {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!("warning: cannot read {}: {e}", projects_dir.display());
-            return Ok(vec![]);
+            warnings.push(format!("cannot read {}: {e}", projects_dir.display()));
+            return Ok(ScanResult { sessions, warnings });
         }
     };
 
     for project_entry in project_entries.filter_map(|e| e.ok()) {
         let project_path = project_entry.path();
         if !project_path.is_dir() {
+            continue;
+        }
+        // Reject symlinked project directories
+        if fs::symlink_metadata(&project_path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -245,7 +269,7 @@ fn scan(projects_dir: &Path, mode: ScanMode) -> Result<Vec<SessionInfo>> {
         let jsonl_files = match fs::read_dir(&project_path) {
             Ok(entries) => entries,
             Err(e) => {
-                eprintln!("warning: cannot read {}: {e}", project_path.display());
+                warnings.push(format!("cannot read {}: {e}", project_path.display()));
                 continue;
             }
         };
@@ -255,6 +279,13 @@ fn scan(projects_dir: &Path, mode: ScanMode) -> Result<Vec<SessionInfo>> {
 
             // Only top-level .jsonl files (not inside subdirectories)
             if !file_path.is_file() {
+                continue;
+            }
+            // Reject symlinked session files
+            if fs::symlink_metadata(&file_path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
                 continue;
             }
             let ext = file_path.extension().and_then(|e| e.to_str());
@@ -267,40 +298,41 @@ fn scan(projects_dir: &Path, mode: ScanMode) -> Result<Vec<SessionInfo>> {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
 
-            let subagent_count = count_subagents(&project_path, &session_id);
-
-            let fallback_ts = file_mtime_iso(&file_path);
-
-            match parse_session_file(&file_path, &session_id, mode) {
+            match parse_session_file(&file_path, &session_id, mode, &mut warnings) {
                 Ok(Some(builder)) => {
+                    let subagent_count = count_subagents(&project_path, &session_id);
+                    let fallback_ts = file_mtime_iso(&file_path);
                     sessions.push(builder.build(
                         project_dir.clone(),
                         subagent_count,
                         fallback_ts,
                         file_path,
+                        is_complete,
                     ));
                 }
                 Ok(None) => {} // Skipped (snapshot-only or empty)
                 Err(e) => {
-                    eprintln!(
-                        "warning: failed to parse {}: {e}",
+                    warnings.push(format!(
+                        "failed to parse {}: {e}",
                         file_path.display()
-                    );
+                    ));
                 }
             }
         }
     }
 
-    Ok(sessions)
+    sessions.sort_unstable_by(|a, b| b.last_active.cmp(&a.last_active));
+    Ok(ScanResult { sessions, warnings })
 }
 
 fn parse_session_file(
     path: &Path,
     session_id: &str,
     mode: ScanMode,
+    warnings: &mut Vec<String>,
 ) -> Result<Option<SessionBuilder>> {
     let file = fs::File::open(path)?;
-    let reader = BufReader::new(file);
+    let reader = BufReader::with_capacity(256 * 1024, file);
     let mut builder = SessionBuilder::new(session_id.to_string());
     let mut had_parse_error = false;
 
@@ -327,13 +359,13 @@ fn parse_session_file(
 
         match serde_json::from_str::<Value>(&line) {
             Ok(entry) => builder.process_entry(&entry),
-            Err(e) => {
+            Err(_) => {
                 if !had_parse_error {
-                    eprintln!(
-                        "warning: malformed JSON in {} line {}: {e}",
+                    warnings.push(format!(
+                        "malformed JSON in {} line {}",
                         path.display(),
                         i + 1
-                    );
+                    ));
                     had_parse_error = true;
                 }
             }
@@ -363,7 +395,7 @@ fn count_subagents(project_path: &Path, session_id: &str) -> u16 {
                         .and_then(|ext| ext.to_str())
                         == Some("jsonl")
                 })
-                .count() as u16
+                .count().min(u16::MAX as usize) as u16
         })
         .unwrap_or(0)
 }
@@ -429,7 +461,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap(year: u64) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
@@ -484,7 +516,9 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let result = scan_full(&projects).unwrap();
+        assert!(result.warnings.is_empty());
+        let results = result.sessions;
         assert_eq!(results.len(), 1);
 
         let s = &results[0];
@@ -500,8 +534,6 @@ mod tests {
         assert_eq!(s.token_usage.output_tokens, 50);
         assert_eq!(s.last_active, "2026-02-28T10:00:02Z");
         assert_eq!(s.subagent_count, 0);
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -519,12 +551,10 @@ mod tests {
             ],
         );
 
-        let results = scan_quick(&projects).unwrap();
+        let results = scan_quick(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert!(results[0].slug.is_none());
         assert_eq!(results[0].first_message.as_deref(), Some("Quick question"));
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -543,12 +573,10 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].first_message.as_deref(), Some("Real user question"));
         assert_eq!(results[0].message_count, 1); // Only the non-meta user message
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -567,14 +595,12 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].first_message.as_deref(),
             Some("Actual user question after command")
         );
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -592,10 +618,8 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 0);
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -606,10 +630,8 @@ mod tests {
 
         write_jsonl(&project, "ppp-qqq-rrr.jsonl", &[]);
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 0);
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -628,11 +650,9 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].first_message.as_deref(), Some("Still works"));
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -656,16 +676,14 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].subagent_count, 3);
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
     fn test_missing_projects_dir() {
-        let results = scan_quick(Path::new("/nonexistent/path/that/doesnt/exist")).unwrap();
+        let results = scan_quick(Path::new("/nonexistent/path/that/doesnt/exist")).unwrap().sessions;
         assert!(results.is_empty());
     }
 
@@ -697,8 +715,8 @@ mod tests {
         let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
         write_jsonl(&project, "yyy-zzz.jsonl", &line_refs);
 
-        let quick = scan_quick(&projects).unwrap();
-        let full = scan_full(&projects).unwrap();
+        let quick = scan_quick(&projects).unwrap().sessions;
+        let full = scan_full(&projects).unwrap().sessions;
 
         assert_eq!(quick.len(), 1);
         assert_eq!(full.len(), 1);
@@ -712,7 +730,9 @@ mod tests {
         assert!(quick[0].slug.is_none());
         assert_eq!(full[0].slug.as_deref(), Some("test-slug"));
 
-        let _ = fs::remove_dir_all(&projects);
+        // is_complete reflects scan mode
+        assert!(!quick[0].is_complete);
+        assert!(full[0].is_complete);
     }
 
     #[test]
@@ -732,12 +752,10 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].model.as_deref(), Some("claude-opus-4-6"));
         assert_eq!(results[0].message_count, 2); // 1 user + 1 real assistant (synthetic excluded)
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -756,6 +774,16 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_multibyte() {
+        // Emoji is 4 bytes — truncation at byte 8 falls inside the emoji
+        let s = "Hello \u{1F600} world";
+        let result = truncate(s, 8);
+        assert!(result.ends_with("..."));
+        // Should back up to before the emoji (byte 6), giving "Hello ..."
+        assert_eq!(result, "Hello ...");
+    }
+
+    #[test]
     fn test_array_content_first_message() {
         let projects = create_fixture_dir("test_array_content");
         let project = projects.join("-Users-test-arr");
@@ -770,11 +798,9 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].first_message.as_deref(), Some("Fix the login bug"));
-
-        let _ = fs::remove_dir_all(&projects);
     }
 
     #[test]
@@ -786,7 +812,7 @@ mod tests {
         let projects_dir = PathBuf::from(home).join(".claude/projects");
 
         let t0 = Instant::now();
-        let quick = scan_quick(&projects_dir).unwrap();
+        let quick = scan_quick(&projects_dir).unwrap().sessions;
         let quick_ms = t0.elapsed().as_millis();
         assert!(!quick.is_empty(), "Expected at least one session");
 
@@ -800,7 +826,7 @@ mod tests {
         assert!(!with_cwd.is_empty(), "Expected at least one session with cwd");
 
         let t1 = Instant::now();
-        let full = scan_full(&projects_dir).unwrap();
+        let full = scan_full(&projects_dir).unwrap().sessions;
         let full_ms = t1.elapsed().as_millis();
         assert!(full.len() >= quick.len());
 
@@ -833,10 +859,8 @@ mod tests {
             ],
         );
 
-        let results = scan_full(&projects).unwrap();
+        let results = scan_full(&projects).unwrap().sessions;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].git_branch.as_deref(), Some("feat/new-feature"));
-
-        let _ = fs::remove_dir_all(&projects);
     }
 }
