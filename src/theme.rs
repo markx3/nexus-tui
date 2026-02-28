@@ -1,7 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border::Set as BorderSet;
-use tachyonfx::fx::Glitch;
-use tachyonfx::{fx, Effect, IntoEffect, Motion};
+use tachyonfx::{fx, Effect, Motion};
 
 use crate::types::{PanelType, ThemeElement};
 
@@ -22,15 +21,6 @@ pub const NEON_MAGENTA: Color = Color::Rgb(255, 0, 128);
 
 // ── Unicode decorators (used by integration layer) ──────────────────
 
-#[allow(dead_code)]
-pub const ICON_GROUP: &str = "\u{25c8}";   // ◈
-#[allow(dead_code)]
-pub const ICON_SUBGROUP: &str = "\u{2b21}"; // ⬡
-#[allow(dead_code)]
-pub const ICON_ACTIVE: &str = "\u{25cf}";   // ●
-#[allow(dead_code)]
-pub const ICON_TARGET: &str = "\u{25ce}";   // ◎
-#[allow(dead_code)]
 pub const SEPARATOR: &str = "\u{2550}\u{2550}"; // ══
 
 // ── Style lookup ──────────────────────────────────────────────────────
@@ -107,32 +97,10 @@ pub fn fx_boot() -> Vec<Effect> {
     ]
 }
 
-/// Backward-compatible alias for `fx_boot`.
+/// Backward-compatible alias for `fx_boot` — will be removed once app.rs
+/// is updated by Agent A to call `fx_boot()` directly.
 pub fn create_boot_effects() -> Vec<Effect> {
     fx_boot()
-}
-
-/// Coalesce transition effect (~500ms).
-#[allow(dead_code)]
-pub fn fx_transition() -> Effect {
-    fx::coalesce(500u32)
-}
-
-/// HSL-shift ping-pong border pulse (~2s cycle).
-#[allow(dead_code)]
-pub fn fx_border_pulse() -> Effect {
-    fx::ping_pong(fx::hsl_shift_fg([10.0, 20.0, 10.0], 1000u32))
-}
-
-/// Short glitch alert effect (~200ms).
-#[allow(dead_code)]
-pub fn fx_glitch_alert() -> Effect {
-    Glitch::builder()
-        .cell_glitch_ratio(0.15)
-        .action_start_delay_ms(0..50)
-        .action_ms(50..200)
-        .build()
-        .into_effect()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -222,8 +190,4 @@ mod tests {
         assert_eq!(fx_boot().len(), 5);
     }
 
-    #[test]
-    fn create_boot_effects_alias_matches() {
-        assert_eq!(create_boot_effects().len(), fx_boot().len());
-    }
 }

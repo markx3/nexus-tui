@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Borders};
 use ratatui::Frame;
 
 use crate::theme;
+use crate::types::{PanelType, ThemeElement};
 use crate::widgets::radar_state::RadarState;
 
 // ---------------------------------------------------------------------------
@@ -44,25 +45,18 @@ pub fn render_radar(
     state: &RadarState,
     focused: bool,
 ) {
-    let border_color = if focused {
-        theme::NEON_CYAN
-    } else {
-        theme::DIM
-    };
-
     let title_style = if focused {
-        Style::new()
-            .fg(theme::NEON_CYAN)
-            .add_modifier(Modifier::BOLD)
+        theme::style_for(ThemeElement::NeonCyan).add_modifier(Modifier::BOLD)
     } else {
-        Style::new().fg(theme::DIM)
+        theme::style_for(ThemeElement::Dim)
     };
 
     let block = Block::default()
         .title(Span::styled(" SESSION RADAR ", title_style))
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(border_color))
-        .style(Style::new().bg(theme::SURFACE));
+        .border_set(theme::border_for(PanelType::Radar))
+        .border_style(theme::border_style_for(PanelType::Radar, focused))
+        .style(theme::style_for(ThemeElement::Surface));
 
     let canvas = Canvas::default()
         .block(block)
@@ -158,16 +152,12 @@ pub fn render_radar(
                     // Show session name near the blip
                     let label_x = blip.x + 4.0;
                     let label_y = blip.y + 2.0;
-                    let label = if blip.group_name.len() > 12 {
-                        &blip.group_name[..12]
-                    } else {
-                        &blip.group_name
-                    };
+                    let label = crate::text_utils::truncate(&blip.group_name, 12);
                     ctx.print(
                         label_x,
                         label_y,
                         Span::styled(
-                            label.to_string(),
+                            label,
                             Style::new().fg(theme::NEON_CYAN),
                         ),
                     );

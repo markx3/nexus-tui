@@ -168,7 +168,7 @@ impl SessionBuilder {
                 if s.contains("<command-message>") {
                     return;
                 }
-                let preview = truncate(s, FIRST_MESSAGE_MAX_LEN);
+                let preview = crate::text_utils::truncate(s, FIRST_MESSAGE_MAX_LEN);
                 self.first_message = Some(preview);
                 self.found_first_message = true;
             }
@@ -180,7 +180,7 @@ impl SessionBuilder {
                             if text.contains("<command-message>") {
                                 return;
                             }
-                            let preview = truncate(text, FIRST_MESSAGE_MAX_LEN);
+                            let preview = crate::text_utils::truncate(text, FIRST_MESSAGE_MAX_LEN);
                             self.first_message = Some(preview);
                             self.found_first_message = true;
                             return;
@@ -405,77 +405,10 @@ fn file_mtime_iso(path: &Path) -> String {
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| {
-            let duration = t.duration_since(SystemTime::UNIX_EPOCH).ok()?;
-            let secs = duration.as_secs();
-            // Simple UTC ISO 8601 without external crate
-            let days = secs / 86400;
-            let time_secs = secs % 86400;
-            let hours = time_secs / 3600;
-            let minutes = (time_secs % 3600) / 60;
-            let seconds = time_secs % 60;
-
-            // Days since epoch to Y-M-D (simplified Gregorian)
-            let (year, month, day) = days_to_ymd(days);
-            Some(format!(
-                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-            ))
+            let secs = t.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+            Some(crate::time_utils::epoch_to_iso(secs))
         })
         .unwrap_or_default()
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    // Epoch = 1970-01-01
-    let mut year = 1970;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let leap = is_leap(year);
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 0;
-    for (i, &md) in month_days.iter().enumerate() {
-        if days < md {
-            month = i as u64 + 1;
-            break;
-        }
-        days -= md;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap(year: u64) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let mut end = max_len;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        let mut result = s[..end].to_string();
-        result.push_str("...");
-        result
-    }
 }
 
 #[cfg(test)]
@@ -756,31 +689,6 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].model.as_deref(), Some("claude-opus-4-6"));
         assert_eq!(results[0].message_count, 2); // 1 user + 1 real assistant (synthetic excluded)
-    }
-
-    #[test]
-    fn test_truncate_long_message() {
-        let long = "a".repeat(300);
-        let result = truncate(&long, 200);
-        assert_eq!(result.len(), 203); // 200 + "..."
-        assert!(result.ends_with("..."));
-    }
-
-    #[test]
-    fn test_truncate_short_message() {
-        let short = "hello";
-        let result = truncate(short, 200);
-        assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn test_truncate_multibyte() {
-        // Emoji is 4 bytes — truncation at byte 8 falls inside the emoji
-        let s = "Hello \u{1F600} world";
-        let result = truncate(s, 8);
-        assert!(result.ends_with("..."));
-        // Should back up to before the emoji (byte 6), giving "Hello ..."
-        assert_eq!(result, "Hello ...");
     }
 
     #[test]
