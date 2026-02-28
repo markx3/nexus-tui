@@ -20,12 +20,17 @@ pub const HAZARD: Color = Color::Rgb(247, 255, 74);
 pub const BORDER: Color = Color::Rgb(40, 44, 72);
 pub const NEON_MAGENTA: Color = Color::Rgb(255, 0, 128);
 
-// ── Unicode decorators ────────────────────────────────────────────────
+// ── Unicode decorators (used by integration layer) ──────────────────
 
+#[allow(dead_code)]
 pub const ICON_GROUP: &str = "\u{25c8}";   // ◈
+#[allow(dead_code)]
 pub const ICON_SUBGROUP: &str = "\u{2b21}"; // ⬡
+#[allow(dead_code)]
 pub const ICON_ACTIVE: &str = "\u{25cf}";   // ●
+#[allow(dead_code)]
 pub const ICON_TARGET: &str = "\u{25ce}";   // ◎
+#[allow(dead_code)]
 pub const SEPARATOR: &str = "\u{2550}\u{2550}"; // ══
 
 // ── Style lookup ──────────────────────────────────────────────────────
@@ -108,16 +113,19 @@ pub fn create_boot_effects() -> Vec<Effect> {
 }
 
 /// Coalesce transition effect (~500ms).
+#[allow(dead_code)]
 pub fn fx_transition() -> Effect {
     fx::coalesce(500u32)
 }
 
 /// HSL-shift ping-pong border pulse (~2s cycle).
+#[allow(dead_code)]
 pub fn fx_border_pulse() -> Effect {
     fx::ping_pong(fx::hsl_shift_fg([10.0, 20.0, 10.0], 1000u32))
 }
 
 /// Short glitch alert effect (~200ms).
+#[allow(dead_code)]
 pub fn fx_glitch_alert() -> Effect {
     Glitch::builder()
         .cell_glitch_ratio(0.15)

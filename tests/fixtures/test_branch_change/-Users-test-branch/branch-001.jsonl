@@ -1,0 +1,2 @@
+{"type":"progress","sessionId":"branch-001","cwd":"/Users/test/branch","gitBranch":"main","version":"2.1.50","timestamp":"2026-02-28T20:00:00Z"}
+{"type":"user","sessionId":"branch-001","cwd":"/Users/test/branch","gitBranch":"feat/new-feature","message":{"role":"user","content":"Working on feature"},"timestamp":"2026-02-28T20:00:01Z"}

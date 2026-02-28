@@ -1,0 +1,2 @@
+{"type":"progress","sessionId":"vvv-www-xxx","cwd":"/Users/test/agents","gitBranch":"main","version":"2.1.50","timestamp":"2026-02-28T16:00:00Z"}
+{"type":"user","sessionId":"vvv-www-xxx","message":{"role":"user","content":"Build something"},"timestamp":"2026-02-28T16:00:01Z"}

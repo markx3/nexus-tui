@@ -1,0 +1,2 @@
+{"type":"progress","sessionId":"arr-test-001","cwd":"/Users/test/arr","gitBranch":"main","version":"2.1.50","timestamp":"2026-02-28T19:00:00Z"}
+{"type":"user","sessionId":"arr-test-001","message":{"role":"user","content":[{"type":"text","text":"Fix the login bug"}]},"timestamp":"2026-02-28T19:00:01Z"}
