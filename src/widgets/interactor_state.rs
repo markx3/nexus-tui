@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::text::Text;
 
 use crate::conversation;
@@ -23,6 +23,7 @@ pub struct InteractorState {
     /// Distinct from `current_session_name` which is the human-readable display name.
     current_tmux_name: Option<String>,
     pub log_scroll_offset: u16,
+    pub live_scroll_offset: u16,
 }
 
 impl InteractorState {
@@ -42,6 +43,7 @@ impl InteractorState {
             current_session_name: None,
             current_tmux_name: None,
             log_scroll_offset: 0,
+            live_scroll_offset: 0,
         }
     }
 
@@ -77,6 +79,7 @@ impl InteractorState {
         session: &SessionSummary,
     ) {
         self.log_scroll_offset = 0;
+        self.live_scroll_offset = 0;
         self.current_session_name = Some(session.display_name.clone());
         self.current_tmux_name = session.tmux_name.clone();
         // Reset last_resize so the next resize_if_needed call fires for the new session
@@ -101,6 +104,7 @@ impl InteractorState {
         self.current_session_name = None;
         self.current_tmux_name = None;
         self.log_scroll_offset = 0;
+        self.live_scroll_offset = 0;
         let _ = self.session_tx.send(String::new());
     }
 
@@ -138,6 +142,26 @@ impl InteractorState {
     /// Scroll conversation log down.
     pub fn scroll_down(&mut self, amount: u16) {
         self.log_scroll_offset = self.log_scroll_offset.saturating_add(amount);
+    }
+
+    /// Handle mouse scroll — adjusts the appropriate offset based on content type.
+    pub fn handle_mouse_scroll(&mut self, kind: MouseEventKind) {
+        let delta: u16 = 3;
+        match (&self.current_content, kind) {
+            (Some(SessionContent::Live(_)), MouseEventKind::ScrollUp) => {
+                self.live_scroll_offset = self.live_scroll_offset.saturating_add(delta);
+            }
+            (Some(SessionContent::Live(_)), MouseEventKind::ScrollDown) => {
+                self.live_scroll_offset = self.live_scroll_offset.saturating_sub(delta);
+            }
+            (Some(SessionContent::ConversationLog(_)), MouseEventKind::ScrollUp) => {
+                self.scroll_up(delta);
+            }
+            (Some(SessionContent::ConversationLog(_)), MouseEventKind::ScrollDown) => {
+                self.scroll_down(delta);
+            }
+            _ => {}
+        }
     }
 
     /// Route an input event: Alt→NexusCommand, forward→tmux, or ignored.
@@ -194,6 +218,20 @@ impl InteractorState {
                     };
                 }
 
+                // Shift+Arrow/Page → scroll the live view instead of forwarding to tmux
+                if current_tmux_name.is_some()
+                    && matches!(self.current_content, Some(SessionContent::Live(_)))
+                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                {
+                    match key.code {
+                        KeyCode::Up => { self.live_scroll_offset = self.live_scroll_offset.saturating_add(1); return RouteResult::Forwarded; }
+                        KeyCode::Down => { self.live_scroll_offset = self.live_scroll_offset.saturating_sub(1); return RouteResult::Forwarded; }
+                        KeyCode::PageUp => { self.live_scroll_offset = self.live_scroll_offset.saturating_add(10); return RouteResult::Forwarded; }
+                        KeyCode::PageDown => { self.live_scroll_offset = self.live_scroll_offset.saturating_sub(10); return RouteResult::Forwarded; }
+                        _ => {}
+                    }
+                }
+
                 // Non-Alt key → forward to tmux if we have an active pane
                 if let Some(tmux_name) = current_tmux_name {
                     if let Some(args) = key_event_to_send_args(key) {
@@ -217,6 +255,7 @@ impl InteractorState {
 
                 RouteResult::Ignored
             }
+            // Mouse events are handled directly in App::handle_event
             Event::Paste(text) => {
                 // Paste → load-buffer + paste-buffer (with 1MB limit)
                 if let Some(tmux_name) = current_tmux_name {

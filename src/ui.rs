@@ -85,6 +85,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         .as_ref()
         .map(|is| is.log_scroll_offset)
         .unwrap_or(0);
+    let live_scroll = app
+        .interactor_state
+        .as_ref()
+        .map(|is| is.live_scroll_offset)
+        .unwrap_or(0);
     widgets::interactor::render_interactor(
         frame,
         interactor_area,
@@ -92,6 +97,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         interactor_session_name,
         false,
         log_scroll,
+        live_scroll,
     );
 
     // Input prompt overlay (renders over full main area for readability)
@@ -381,6 +387,11 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+f", "Fullscreen attach to session"),
         ("Alt+t / Alt+T", "Cycle theme"),
         ("Alt+l", "Open lazygit in session cwd"),
+        ("", ""),
+        ("", "-- Scrolling (Live & Log) --"),
+        ("Mouse scroll", "Scroll view 3 lines"),
+        ("Shift+Up/Down", "Scroll view 1 line"),
+        ("Shift+PgUp/PgDn", "Scroll view 10 lines"),
         ("", ""),
         ("", "All other keys are forwarded to"),
         ("", "the embedded Claude Code session."),

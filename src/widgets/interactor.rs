@@ -19,6 +19,7 @@ pub fn render_interactor(
     session_name: Option<&str>,
     _focused: bool,
     log_scroll_offset: u16,
+    live_scroll_offset: u16,
 ) {
     // Small-area guard: don't render in tiny areas
     if area.width < 10 || area.height < 3 {
@@ -45,7 +46,7 @@ pub fn render_interactor(
 
     match content {
         Some(SessionContent::Live(text)) => {
-            render_live(frame, inner, text);
+            render_live(frame, inner, text, live_scroll_offset);
         }
         Some(SessionContent::ConversationLog(turns)) => {
             render_conversation_log(frame, inner, turns, log_scroll_offset);
@@ -59,9 +60,10 @@ pub fn render_interactor(
 /// Render live terminal content from the capture worker.
 ///
 /// Scrolls to the bottom so the input cursor area is always visible.
-fn render_live(frame: &mut Frame, area: Rect, text: &Text<'static>) {
+fn render_live(frame: &mut Frame, area: Rect, text: &Text<'static>, user_offset: u16) {
     let total_lines = text.lines.len() as u16;
-    let scroll_offset = total_lines.saturating_sub(area.height);
+    let bottom_pin = total_lines.saturating_sub(area.height);
+    let scroll_offset = bottom_pin.saturating_sub(user_offset);
     let paragraph = Paragraph::new(text.clone()).scroll((scroll_offset, 0));
     frame.render_widget(paragraph, area);
 }
@@ -134,7 +136,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, None, None, false, 0);
+                render_interactor(frame, area, None, None, false, 0, 0);
             })
             .unwrap();
     }
@@ -148,7 +150,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), Some("test-session"), false, 0);
+                render_interactor(frame, area, Some(&content), Some("test-session"), false, 0, 0);
             })
             .unwrap();
     }
@@ -171,7 +173,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), Some("old-session"), false, 0);
+                render_interactor(frame, area, Some(&content), Some("old-session"), false, 0, 0);
             })
             .unwrap();
     }
@@ -184,7 +186,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), None, false, 0);
+                render_interactor(frame, area, Some(&content), None, false, 0, 0);
             })
             .unwrap();
     }
@@ -196,7 +198,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, None, None, false, 0);
+                render_interactor(frame, area, None, None, false, 0, 0);
             })
             .unwrap();
     }
@@ -208,7 +210,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, 0, 0);
-                render_interactor(frame, area, None, None, false, 0);
+                render_interactor(frame, area, None, None, false, 0, 0);
             })
             .unwrap();
     }
@@ -227,7 +229,23 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), None, false, 10);
+                render_interactor(frame, area, Some(&content), None, false, 10, 0);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn render_interactor_live_with_scroll_offset() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        // Create content taller than the viewport so offset has effect
+        let lines: Vec<&str> = (0..100).map(|_| "line of output").collect();
+        let text = Text::raw(lines.join("\n"));
+        let content = SessionContent::Live(text);
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_interactor(frame, area, Some(&content), Some("live-session"), false, 0, 5);
             })
             .unwrap();
     }
