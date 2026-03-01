@@ -94,16 +94,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         log_scroll,
     );
 
-    // Input prompt overlay (renders at bottom of tree area, above logo)
+    // Input prompt overlay (renders over full main area for readability)
     match app.input_mode {
         InputMode::TextInput => {
-            render_text_input(frame, tree_area, app);
+            render_text_input(frame, main_area, app);
         }
         InputMode::Confirm => {
-            render_confirm(frame, tree_area, app);
+            render_confirm(frame, main_area, app);
         }
         InputMode::GroupPicker => {
-            render_group_picker(frame, tree_area, app);
+            render_group_picker(frame, main_area, app);
         }
         InputMode::Normal => {}
     }
