@@ -202,6 +202,13 @@ impl TmuxManager {
             .stderr(Stdio::null())
             .status();
 
+        // Scrollback buffer size — predictable budget for capture-pane -S -500
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-option", "-g", "history-limit", "2000"])
+            .stderr(Stdio::null())
+            .status();
+
         // Ctrl+Q → detach (consistent way to return to Nexus TUI)
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
@@ -224,7 +231,7 @@ impl TmuxManager {
         Self::validate_target(session_name)?;
         let output = Command::new("tmux")
             .args(["-L", &self.socket_name])
-            .args(["capture-pane", "-t", session_name, "-p", "-e", "-N"])
+            .args(["capture-pane", "-t", session_name, "-p", "-e", "-N", "-S", "-500"])
             .stderr(Stdio::null())
             .output()
             .wrap_err("failed to run tmux capture-pane")?;

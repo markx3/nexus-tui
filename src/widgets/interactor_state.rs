@@ -236,6 +236,8 @@ impl InteractorState {
                 if let Some(tmux_name) = current_tmux_name {
                     if let Some(args) = key_event_to_send_args(key) {
                         let _ = self.tmux.send_keys(tmux_name, &args);
+                        // Auto-follow: snap to bottom so user sees the response
+                        self.live_scroll_offset = 0;
                         // Wake capture worker so display updates immediately
                         let _ = self.nudge_tx.send(());
                         return RouteResult::Forwarded;
