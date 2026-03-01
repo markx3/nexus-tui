@@ -1,9 +1,10 @@
 use std::sync::mpsc;
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
-use ratatui::text::Text;
+use ratatui::text::{Line, Span, Text};
 
 use crate::conversation;
+use crate::theme;
 use crate::tmux::{key_event_to_send_args, TmuxManager};
 use crate::types::*;
 
@@ -121,17 +122,45 @@ impl InteractorState {
     }
 
     /// Load conversation log for a dead/detached session.
+    ///
+    /// Pre-renders the turns into `Text<'static>` so the render loop
+    /// doesn't rebuild styled lines every frame.
     fn load_conversation_log(&mut self, session: &SessionSummary) {
-        if let Some(ref path) = session.jsonl_path {
-            let turns = conversation::parse_conversation(path, 100);
-            if turns.is_empty() {
-                self.current_content = Some(SessionContent::ConversationLog(Vec::new()));
-            } else {
-                self.current_content = Some(SessionContent::ConversationLog(turns));
+        let turns = session
+            .jsonl_path
+            .as_ref()
+            .map(|path| conversation::parse_conversation(path, 100))
+            .unwrap_or_default();
+        let text = Self::render_turns_to_text(&turns);
+        self.current_content = Some(SessionContent::ConversationLog(text));
+    }
+
+    /// Convert conversation turns into pre-rendered `Text<'static>`.
+    fn render_turns_to_text(turns: &[ConversationTurn]) -> Text<'static> {
+        let mut lines: Vec<Line> = Vec::new();
+
+        for turn in turns {
+            let (role_label, role_style) = match turn.role {
+                Role::Human => ("You", theme::style_for(ThemeElement::ConversationHuman)),
+                Role::Assistant => ("Claude", theme::style_for(ThemeElement::ConversationAssistant)),
+            };
+
+            lines.push(Line::from(Span::styled(
+                format!("--- {role_label} ---"),
+                role_style,
+            )));
+
+            for content_line in turn.content.lines() {
+                lines.push(Line::from(Span::styled(
+                    content_line.to_string(),
+                    theme::style_for(ThemeElement::Text),
+                )));
             }
-        } else {
-            self.current_content = Some(SessionContent::ConversationLog(Vec::new()));
+
+            lines.push(Line::from(""));
         }
+
+        Text::from(lines)
     }
 
     /// Scroll conversation log up.

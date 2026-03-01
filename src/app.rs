@@ -16,6 +16,7 @@ use crate::tmux::{sanitize_tmux_name, TmuxManager};
 use crate::types::*;
 use crate::ui;
 use crate::widgets::interactor_state::InteractorState;
+use crate::widgets::logo::LogoState;
 use crate::widgets::tree_state::{TreeAction, TreeState};
 
 const TICK_RATE: Duration = Duration::from_millis(16);
@@ -61,7 +62,7 @@ pub struct App {
     // Session interactor state (None if tmux unavailable)
     pub(crate) interactor_state: Option<InteractorState>,
     // Logo animation state
-    pub(crate) logo_frame: usize,
+    pub(crate) logo_state: LogoState,
     logo_last_advance: Instant,
     // Pre-launch JSONL snapshots: nexus session_id → set of JSONL stems before launch
     jsonl_snapshots: HashMap<String, HashSet<String>>,
@@ -128,7 +129,7 @@ impl App {
             needs_full_redraw: false,
             dirty: true,
             interactor_state,
-            logo_frame: 0,
+            logo_state: LogoState::new(),
             logo_last_advance: Instant::now(),
             jsonl_snapshots: HashMap::new(),
         }
@@ -170,7 +171,11 @@ impl App {
 
             // Advance logo animation frame
             if now.duration_since(self.logo_last_advance) >= LOGO_FRAME_INTERVAL {
-                self.logo_frame = self.logo_frame.wrapping_add(1);
+                let term_size = terminal.size()?;
+                // Logo panel: 13% of width, 9 rows high, minus 2 for borders each
+                let logo_w = (term_size.width * 13 / 100).saturating_sub(2) as usize;
+                let logo_h = 9usize.saturating_sub(2);
+                self.logo_state.advance(logo_w, logo_h);
                 self.logo_last_advance = now;
                 self.dirty = true;
             }
@@ -1109,6 +1114,7 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)
             TreeNode::Session(s) => {
                 if s.claude_session_id.is_none()
                     && s.cwd.is_some()
+                    && s.status != SessionStatus::Dead
                 {
                     result.push((
                         s.session_id.clone(),

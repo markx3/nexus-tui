@@ -11,7 +11,8 @@ use crate::types::*;
 // Game of Life engine
 // ---------------------------------------------------------------------------
 
-/// Animation loops every CYCLE_LEN frames, then re-seeds.
+/// Animation loops every CYCLE_LEN frames, then re-seeds (used in tests).
+#[cfg(test)]
 const CYCLE_LEN: usize = 128;
 
 /// Initial live cells as (dx, dy) offsets from center.
@@ -85,28 +86,70 @@ fn symbol_for(x: usize, y: usize) -> char {
 }
 
 // ---------------------------------------------------------------------------
-// Frame generation
+// LogoState — cached Game of Life grid (one step per frame, not replay)
 // ---------------------------------------------------------------------------
 
-fn generate_frame(width: usize, height: usize, frame_index: usize) -> Vec<Vec<char>> {
+pub struct LogoState {
+    grid: Vec<Vec<bool>>,
+    width: usize,
+    height: usize,
+}
+
+impl LogoState {
+    pub fn new() -> Self {
+        Self {
+            grid: Vec::new(),
+            width: 0,
+            height: 0,
+        }
+    }
+
+    /// Advance the GoL simulation by one step.
+    ///
+    /// If the panel size changed (or first call), re-seed. Otherwise evolve
+    /// one generation. Automatically re-seeds after CYCLE_LEN frames.
+    pub fn advance(&mut self, width: usize, height: usize) {
+        if width != self.width || height != self.height || width < 5 || height < 3 {
+            // Size changed or too small — reseed
+            self.width = width;
+            self.height = height;
+            if width >= 5 && height >= 3 {
+                self.grid = gol_seed(width, height);
+            } else {
+                self.grid = Vec::new();
+            }
+            return;
+        }
+
+        // Check if grid is all dead (stagnated) — reseed
+        let any_alive = self.grid.iter().any(|row| row.iter().any(|&c| c));
+        if !any_alive {
+            self.grid = gol_seed(width, height);
+            return;
+        }
+
+        self.grid = gol_step(&self.grid);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame generation (from cached state)
+// ---------------------------------------------------------------------------
+
+fn state_to_char_grid(state: &LogoState) -> Vec<Vec<char>> {
+    let width = state.width;
+    let height = state.height;
     let mut grid = vec![vec![' '; width]; height];
 
     if width < 5 || height < 3 {
         return grid;
     }
 
-    // Run Game of Life from seed
-    let steps = frame_index % CYCLE_LEN;
-    let mut state = gol_seed(width, height);
-    for _ in 0..steps {
-        state = gol_step(&state);
-    }
-
     // Convert live cells to display chars
-    for y in 0..height {
-        for x in 0..width {
-            if state[y][x] {
-                grid[y][x] = symbol_for(x, y);
+    for (y, (grid_row, state_row)) in grid.iter_mut().zip(state.grid.iter()).enumerate() {
+        for (x, (cell, &alive)) in grid_row.iter_mut().zip(state_row.iter()).enumerate() {
+            if alive {
+                *cell = symbol_for(x, y);
             }
         }
     }
@@ -138,12 +181,61 @@ fn generate_frame(width: usize, height: usize, frame_index: usize) -> Vec<Vec<ch
     grid
 }
 
+/// Generate a char grid from seed (used only in tests for deterministic comparison).
+#[cfg(test)]
+fn generate_frame(width: usize, height: usize, frame_index: usize) -> Vec<Vec<char>> {
+    let mut grid = vec![vec![' '; width]; height];
+
+    if width < 5 || height < 3 {
+        return grid;
+    }
+
+    let steps = frame_index % CYCLE_LEN;
+    let mut state = gol_seed(width, height);
+    for _ in 0..steps {
+        state = gol_step(&state);
+    }
+
+    for y in 0..height {
+        for x in 0..width {
+            if state[y][x] {
+                grid[y][x] = symbol_for(x, y);
+            }
+        }
+    }
+
+    let cxi = width / 2;
+    let cyi = height / 2;
+
+    if cyi < height && cxi < width {
+        grid[cyi][cxi] = '◉';
+    }
+    if cyi < height && cxi >= 2 && cxi + 2 < width {
+        grid[cyi][cxi - 2] = '─';
+        grid[cyi][cxi - 1] = '─';
+        grid[cyi][cxi + 1] = '─';
+        grid[cyi][cxi + 2] = '─';
+    }
+    if cxi < width && cyi >= 1 && cyi + 1 < height {
+        grid[cyi - 1][cxi] = '┼';
+        grid[cyi + 1][cxi] = '┼';
+    }
+    if cxi >= 1 && cxi + 1 < width && cyi >= 1 && cyi + 1 < height {
+        grid[cyi - 1][cxi - 1] = '─';
+        grid[cyi - 1][cxi + 1] = '─';
+        grid[cyi + 1][cxi - 1] = '─';
+        grid[cyi + 1][cxi + 1] = '─';
+    }
+
+    grid
+}
+
 // ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
 
 /// Render the animated logo panel.
-pub fn render_logo(frame: &mut Frame, area: Rect, frame_index: usize) {
+pub fn render_logo(frame: &mut Frame, area: Rect, logo_state: &LogoState) {
     let block = Block::default()
         .title(Span::styled(
             " ◉ NEXUS ",
@@ -161,9 +253,7 @@ pub fn render_logo(frame: &mut Frame, area: Rect, frame_index: usize) {
         return;
     }
 
-    let w = inner.width as usize;
-    let h = inner.height as usize;
-    let grid = generate_frame(w, h, frame_index);
+    let grid = state_to_char_grid(logo_state);
 
     let agent_style = theme::style_for(ThemeElement::LogoAgent);
     let nexus_style = theme::style_for(ThemeElement::LogoNexus);
@@ -203,10 +293,12 @@ mod tests {
     fn render_logo_no_panic() {
         let backend = TestBackend::new(20, 9);
         let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = LogoState::new();
+        state.advance(18, 7); // inner area after borders
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_logo(frame, area, 0);
+                render_logo(frame, area, &state);
             })
             .unwrap();
     }
@@ -215,10 +307,11 @@ mod tests {
     fn render_logo_zero_area() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
+        let state = LogoState::new();
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, 0, 0);
-                render_logo(frame, area, 0);
+                render_logo(frame, area, &state);
             })
             .unwrap();
     }
@@ -227,24 +320,30 @@ mod tests {
     fn render_logo_all_frames() {
         let backend = TestBackend::new(20, 9);
         let mut terminal = Terminal::new(backend).unwrap();
-        for i in 0..24 {
+        let mut state = LogoState::new();
+        for _ in 0..24 {
+            state.advance(18, 7);
             terminal
                 .draw(|frame| {
                     let area = frame.area();
-                    render_logo(frame, area, i);
+                    render_logo(frame, area, &state);
                 })
                 .unwrap();
         }
     }
 
     #[test]
-    fn render_logo_wraps_frame_index() {
+    fn render_logo_many_advances() {
+        let mut state = LogoState::new();
+        for _ in 0..1000 {
+            state.advance(20, 9);
+        }
         let backend = TestBackend::new(20, 9);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_logo(frame, area, 999_999);
+                render_logo(frame, area, &state);
             })
             .unwrap();
     }
@@ -253,10 +352,12 @@ mod tests {
     fn render_logo_small_area() {
         let backend = TestBackend::new(10, 4);
         let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = LogoState::new();
+        state.advance(8, 2);
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_logo(frame, area, 5);
+                render_logo(frame, area, &state);
             })
             .unwrap();
     }
@@ -343,11 +444,27 @@ mod tests {
     fn render_logo_large_area() {
         let backend = TestBackend::new(40, 20);
         let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = LogoState::new();
+        state.advance(38, 18);
+        state.advance(38, 18);
+        state.advance(38, 18);
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_logo(frame, area, 3);
+                render_logo(frame, area, &state);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn logo_state_reseeds_on_size_change() {
+        let mut state = LogoState::new();
+        state.advance(20, 9);
+        let grid1 = state.grid.clone();
+        // Change size triggers reseed
+        state.advance(30, 12);
+        assert_eq!(state.width, 30);
+        assert_eq!(state.height, 12);
+        assert_ne!(grid1.len(), state.grid.len());
     }
 }

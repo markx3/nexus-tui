@@ -177,8 +177,8 @@ pub enum TmuxSessionStatus {
 pub enum SessionContent {
     /// Live terminal content, pre-parsed by capture worker thread.
     Live(Text<'static>),
-    /// Conversation log from JSONL for sessions without a tmux pane.
-    ConversationLog(Vec<ConversationTurn>),
+    /// Pre-rendered conversation log from JSONL for sessions without a tmux pane.
+    ConversationLog(Text<'static>),
 }
 
 /// A single conversation turn from the JSONL log.

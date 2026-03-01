@@ -71,7 +71,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     );
 
     if let Some(logo_area) = logo_area {
-        widgets::logo::render_logo(frame, logo_area, app.logo_frame);
+        widgets::logo::render_logo(frame, logo_area, &app.logo_state);
     }
 
     // Clamp live_scroll_offset to max scrollable range before reading it

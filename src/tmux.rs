@@ -51,6 +51,7 @@ impl TmuxManager {
     /// If `resume_id` is provided, launches `claude --resume <id>` so Claude
     /// Code picks up the previous conversation.
     pub fn launch_claude_session(&self, name: &str, cwd: &str, resume_id: Option<&str>) -> Result<()> {
+        Self::validate_target(name)?;
         let mut cmd = Command::new("tmux");
         cmd.args(["-L", &self.socket_name])
             .args(["new-session", "-d", "-s", name, "-c", cwd, "claude"]);
@@ -78,6 +79,7 @@ impl TmuxManager {
     ///
     /// If we're already inside tmux, uses `switch-client`; otherwise `attach`.
     pub fn resume_session(&self, name: &str) -> Result<()> {
+        Self::validate_target(name)?;
         let inside_tmux = std::env::var("TMUX").is_ok();
 
         let status = if inside_tmux {
@@ -135,6 +137,8 @@ impl TmuxManager {
 
     /// Rename an existing tmux session.
     pub fn rename_session(&self, old_name: &str, new_name: &str) -> Result<()> {
+        Self::validate_target(old_name)?;
+        Self::validate_target(new_name)?;
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["rename-session", "-t", old_name, new_name])
@@ -154,6 +158,7 @@ impl TmuxManager {
 
     /// Kill a session by name on the nexus socket.
     pub fn kill_session(&self, name: &str) -> Result<()> {
+        Self::validate_target(name)?;
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["kill-session", "-t", name])

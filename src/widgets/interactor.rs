@@ -1,5 +1,5 @@
 use ratatui::layout::{Alignment, Rect};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
@@ -48,8 +48,8 @@ pub fn render_interactor(
         Some(SessionContent::Live(text)) => {
             render_live(frame, inner, text, live_scroll_offset);
         }
-        Some(SessionContent::ConversationLog(turns)) => {
-            render_conversation_log(frame, inner, turns, log_scroll_offset);
+        Some(SessionContent::ConversationLog(text)) => {
+            render_conversation_log(frame, inner, text, log_scroll_offset);
         }
         None => {
             render_empty(frame, inner);
@@ -68,14 +68,14 @@ fn render_live(frame: &mut Frame, area: Rect, text: &Text<'static>, user_offset:
     frame.render_widget(paragraph, area);
 }
 
-/// Render a conversation log for sessions without a tmux pane.
+/// Render a pre-rendered conversation log for sessions without a tmux pane.
 fn render_conversation_log(
     frame: &mut Frame,
     area: Rect,
-    turns: &[ConversationTurn],
+    text: &Text<'static>,
     scroll_offset: u16,
 ) {
-    if turns.is_empty() {
+    if text.lines.is_empty() {
         let msg = Paragraph::new("No conversation data available")
             .style(theme::style_for(ThemeElement::Dim))
             .alignment(Alignment::Center);
@@ -83,33 +83,7 @@ fn render_conversation_log(
         return;
     }
 
-    let mut lines: Vec<Line> = Vec::new();
-
-    for turn in turns {
-        let (role_label, role_style) = match turn.role {
-            Role::Human => ("You", theme::style_for(ThemeElement::ConversationHuman)),
-            Role::Assistant => ("Claude", theme::style_for(ThemeElement::ConversationAssistant)),
-        };
-
-        // Role header
-        lines.push(Line::from(Span::styled(
-            format!("--- {role_label} ---"),
-            role_style,
-        )));
-
-        // Content lines
-        for content_line in turn.content.lines() {
-            lines.push(Line::from(Span::styled(
-                content_line.to_string(),
-                theme::style_for(ThemeElement::Text),
-            )));
-        }
-
-        // Blank separator
-        lines.push(Line::from(""));
-    }
-
-    let paragraph = Paragraph::new(lines)
+    let paragraph = Paragraph::new(text.clone())
         .wrap(Wrap { trim: false })
         .scroll((scroll_offset, 0));
     frame.render_widget(paragraph, area);
@@ -127,6 +101,7 @@ fn render_empty(frame: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::text::Line;
     use ratatui::Terminal;
 
     #[test]
@@ -159,17 +134,15 @@ mod tests {
     fn render_interactor_conversation_log_no_panic() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let turns = vec![
-            ConversationTurn {
-                role: Role::Human,
-                content: "Hello".to_string(),
-            },
-            ConversationTurn {
-                role: Role::Assistant,
-                content: "Hi there!".to_string(),
-            },
-        ];
-        let content = SessionContent::ConversationLog(turns);
+        let text = Text::from(vec![
+            Line::from("--- You ---"),
+            Line::from("Hello"),
+            Line::from(""),
+            Line::from("--- Claude ---"),
+            Line::from("Hi there!"),
+            Line::from(""),
+        ]);
+        let content = SessionContent::ConversationLog(text);
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -182,7 +155,7 @@ mod tests {
     fn render_interactor_empty_conversation_log() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let content = SessionContent::ConversationLog(vec![]);
+        let content = SessionContent::ConversationLog(Text::default());
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -219,13 +192,17 @@ mod tests {
     fn render_interactor_with_scroll_offset() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let turns: Vec<ConversationTurn> = (0..50)
-            .map(|i| ConversationTurn {
-                role: if i % 2 == 0 { Role::Human } else { Role::Assistant },
-                content: format!("Turn {i}"),
+        let lines: Vec<Line> = (0..50)
+            .flat_map(|i| {
+                let role = if i % 2 == 0 { "You" } else { "Claude" };
+                vec![
+                    Line::from(format!("--- {role} ---")),
+                    Line::from(format!("Turn {i}")),
+                    Line::from(""),
+                ]
             })
             .collect();
-        let content = SessionContent::ConversationLog(turns);
+        let content = SessionContent::ConversationLog(Text::from(lines));
         terminal
             .draw(|frame| {
                 let area = frame.area();

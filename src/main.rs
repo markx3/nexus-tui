@@ -95,7 +95,10 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 .get_session_cwd(&session_id)?
                 .ok_or_else(|| color_eyre::eyre::eyre!("Session '{}' has no cwd", session_id))?;
             let name = sanitize_tmux_name(&session_id);
-            tmux.launch_claude_session(&name, &cwd, None)?;
+            let tree = db.get_visible_tree(true)?;
+            let resume_id = find_session_in_tree(&tree, &session_id)
+                .and_then(|s| s.claude_session_id.clone());
+            tmux.launch_claude_session(&name, &cwd, resume_id.as_deref())?;
             db.update_session_status(&session_id, types::SessionStatus::Active)?;
             println!("Launched session '{}'", session_id);
         }
@@ -133,7 +136,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
             tmux.send_keys(&session_name, &tmux::SendKeysArgs::Literal(text))?;
             if json {
-                println!(r#"{{"status":"sent","session":"{}"}}"#, session_name);
+                println!("{}", serde_json::json!({"status": "sent", "session": session_name}));
             } else {
                 println!("Sent to '{}'", session_name);
             }
@@ -168,7 +171,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
             db.delete_session(&session_id)?;
             if json {
-                println!(r#"{{"status":"deleted","session":"{}"}}"#, session_id);
+                println!("{}", serde_json::json!({"status": "deleted", "session": session_id}));
             } else {
                 println!("Deleted session '{}'", session_id);
             }
@@ -186,10 +189,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
             db.update_session_name(&session_id, &name, &new_tmux_name)?;
             if json {
-                println!(
-                    r#"{{"status":"renamed","session":"{}","name":"{}"}}"#,
-                    session_id, name
-                );
+                println!("{}", serde_json::json!({"status": "renamed", "session": session_id, "name": name}));
             } else {
                 println!("Renamed session '{}' to '{}'", session_id, name);
             }
@@ -202,10 +202,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             };
             db.move_session_to_group(&session_id, gid)?;
             if json {
-                println!(
-                    r#"{{"status":"moved","session":"{}","group":"{}"}}"#,
-                    session_id, group
-                );
+                println!("{}", serde_json::json!({"status": "moved", "session": session_id, "group": group}));
             } else {
                 println!("Moved session '{}' to group '{}'", session_id, group);
             }
@@ -214,7 +211,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             let _lock = acquire_lock()?;
             let gid = db.create_group(&name, "")?;
             if json {
-                println!(r#"{{"status":"created","group":"{}","id":{}}}"#, name, gid);
+                println!("{}", serde_json::json!({"status": "created", "group": name, "id": gid}));
             } else {
                 println!("Created group '{}' (id: {})", name, gid);
             }

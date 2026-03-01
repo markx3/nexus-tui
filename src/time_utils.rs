@@ -57,6 +57,15 @@ pub fn seconds_ago(iso_ts: &str) -> Option<i64> {
 
 /// Convert a UTC date/time to a Unix epoch timestamp.
 fn utc_to_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64 {
+    if year < 1970
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&min)
+        || !(0..=59).contains(&sec)
+    {
+        return 0;
+    }
     let mut days: i64 = 0;
     for y in 1970..year {
         days += if is_leap_year(y) { 366 } else { 365 };
