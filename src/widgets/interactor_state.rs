@@ -15,9 +15,13 @@ pub struct InteractorState {
     tmux: TmuxManager,
     content_rx: mpsc::Receiver<Option<Text<'static>>>,
     session_tx: mpsc::Sender<String>,
+    nudge_tx: mpsc::Sender<()>,
     pub current_content: Option<SessionContent>,
     last_resize: (u16, u16),
     pub current_session_name: Option<String>,
+    /// The actual tmux session name (sanitized), used for resize_pane/send_keys.
+    /// Distinct from `current_session_name` which is the human-readable display name.
+    current_tmux_name: Option<String>,
     pub log_scroll_offset: u16,
 }
 
@@ -26,14 +30,17 @@ impl InteractorState {
         tmux: TmuxManager,
         content_rx: mpsc::Receiver<Option<Text<'static>>>,
         session_tx: mpsc::Sender<String>,
+        nudge_tx: mpsc::Sender<()>,
     ) -> Self {
         Self {
             tmux,
             content_rx,
             session_tx,
+            nudge_tx,
             current_content: None,
             last_resize: (0, 0),
             current_session_name: None,
+            current_tmux_name: None,
             log_scroll_offset: 0,
         }
     }
@@ -71,6 +78,9 @@ impl InteractorState {
     ) {
         self.log_scroll_offset = 0;
         self.current_session_name = Some(session.display_name.clone());
+        self.current_tmux_name = session.tmux_name.clone();
+        // Reset last_resize so the next resize_if_needed call fires for the new session
+        self.last_resize = (0, 0);
 
         if session.status == SessionStatus::Active {
             // Active session — tell capture worker to start capturing
@@ -89,6 +99,7 @@ impl InteractorState {
     pub fn clear(&mut self) {
         self.current_content = None;
         self.current_session_name = None;
+        self.current_tmux_name = None;
         self.log_scroll_offset = 0;
         let _ = self.session_tx.send(String::new());
     }
@@ -98,9 +109,7 @@ impl InteractorState {
     /// Only sends the resize command if dimensions actually changed.
     pub fn resize_if_needed(&mut self, cols: u16, rows: u16) {
         if (cols, rows) != self.last_resize && cols > 0 && rows > 0 {
-            if let Some(ref name) = self.current_session_name {
-                // Find the tmux name — for now, use session_tx's last value
-                // The actual tmux name is sent via the capture worker channel
+            if let Some(ref name) = self.current_tmux_name {
                 let _ = self.tmux.resize_pane(name, cols, rows);
             }
             self.last_resize = (cols, rows);
@@ -144,18 +153,28 @@ impl InteractorState {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // Alt+key → NexusCommand
                 if key.modifiers.contains(KeyModifiers::ALT) {
+                    // Terminal Ctrl+key collisions: legacy terminals encode
+                    // Ctrl+M as 0x0D (Enter) and Ctrl+H as 0x08 (Backspace).
+                    // crossterm maps these bytes to named KeyCodes, losing the
+                    // Ctrl info. So Ctrl+Alt+M arrives as Alt+Enter and
+                    // Ctrl+Alt+H as Alt+Backspace — indistinguishable from
+                    // the real keys. We map Enter→MoveSession (matching 'm')
+                    // and Backspace→ToggleHelp (matching 'h') to resolve this.
+                    // ToggleExpand is rebound to 'e' to avoid the collision.
                     return match key.code {
                         KeyCode::Char('j') => RouteResult::NexusCommand(NexusCommand::CursorDown),
                         KeyCode::Char('k') => RouteResult::NexusCommand(NexusCommand::CursorUp),
-                        KeyCode::Enter => RouteResult::NexusCommand(NexusCommand::ToggleExpand),
+                        KeyCode::Char('e') => RouteResult::NexusCommand(NexusCommand::ToggleExpand),
                         KeyCode::Char('n') => RouteResult::NexusCommand(NexusCommand::NewSession),
                         KeyCode::Char('d') => RouteResult::NexusCommand(NexusCommand::DeleteSelected),
                         KeyCode::Char('r') => RouteResult::NexusCommand(NexusCommand::RenameSelected),
-                        KeyCode::Char('m') => RouteResult::NexusCommand(NexusCommand::MoveSession),
+                        KeyCode::Char('m') | KeyCode::Enter => {
+                            RouteResult::NexusCommand(NexusCommand::MoveSession)
+                        }
                         KeyCode::Char('g') => RouteResult::NexusCommand(NexusCommand::NewGroup),
                         KeyCode::Char('x') => RouteResult::NexusCommand(NexusCommand::KillTmux),
                         KeyCode::Char('f') => RouteResult::NexusCommand(NexusCommand::FullscreenAttach),
-                        KeyCode::Char('h') | KeyCode::Char('?') => {
+                        KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::Backspace => {
                             RouteResult::NexusCommand(NexusCommand::ToggleHelp)
                         }
                         KeyCode::Char('q') => RouteResult::NexusCommand(NexusCommand::Quit),
@@ -170,6 +189,8 @@ impl InteractorState {
                 if let Some(tmux_name) = current_tmux_name {
                     if let Some(args) = key_event_to_send_args(key) {
                         let _ = self.tmux.send_keys(tmux_name, &args);
+                        // Wake capture worker so display updates immediately
+                        let _ = self.nudge_tx.send(());
                         return RouteResult::Forwarded;
                     }
                 }
@@ -192,6 +213,7 @@ impl InteractorState {
                 if let Some(tmux_name) = current_tmux_name {
                     if text.len() <= 1_048_576 {
                         let _ = self.tmux.load_buffer_and_paste(tmux_name, text);
+                        let _ = self.nudge_tx.send(());
                         return RouteResult::Forwarded;
                     }
                 }
