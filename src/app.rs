@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use crossterm::event::{EnableBracketedPaste, DisableBracketedPaste};
+use crossterm::event::{EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, MouseEventKind};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::DefaultTerminal;
 use tachyonfx::Effect;
@@ -63,6 +63,8 @@ pub struct App {
     // Logo animation state
     pub(crate) logo_frame: usize,
     logo_last_advance: Instant,
+    // Pre-launch JSONL snapshots: nexus session_id → set of JSONL stems before launch
+    jsonl_snapshots: HashMap<String, HashSet<String>>,
 }
 
 impl App {
@@ -128,16 +130,18 @@ impl App {
             interactor_state,
             logo_frame: 0,
             logo_last_advance: Instant::now(),
+            jsonl_snapshots: HashMap::new(),
         }
     }
 
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         // Enable bracketed paste so crossterm emits Event::Paste
-        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+        // Enable mouse capture so we receive scroll wheel events
+        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
 
         let result = self.event_loop(&mut terminal);
 
-        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture);
         result
     }
 
@@ -199,8 +203,14 @@ impl App {
 
             if event::poll(poll_timeout)? {
                 let ev = event::read()?;
+                let skip_redraw = matches!(
+                    &ev,
+                    Event::Mouse(m) if !matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown)
+                );
                 self.handle_event(ev);
-                self.dirty = true;
+                if !skip_redraw {
+                    self.dirty = true;
+                }
             }
         }
 
@@ -208,6 +218,20 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event) {
+        // Mouse scroll — handle directly, regardless of mode.
+        // Non-scroll mouse events (move, click) are silently dropped.
+        if let Event::Mouse(mouse) = &event {
+            match mouse.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    if let Some(ref mut is) = self.interactor_state {
+                        is.handle_mouse_scroll(mouse.kind);
+                    }
+                }
+                _ => {} // drop mouse-move / click — avoids unnecessary redraws
+            }
+            return;
+        }
+
         // Modal overlays intercept key events directly (not forwarded to tmux)
         if self.input_mode != InputMode::Normal {
             if let Event::Key(key) = event {
@@ -624,6 +648,7 @@ impl App {
                     self.status_message =
                         Some((format!("delete failed: {e}"), Instant::now()));
                 }
+                self.jsonl_snapshots.remove(&session_id);
                 self.refresh_tree();
             }
             InputContext::ConfirmDeleteGroup { group_id } => {
@@ -828,8 +853,10 @@ impl App {
 
     fn create_session(&mut self, name: &str, cwd: &str, group_id: Option<GroupId>) {
         let tmux_name = sanitize_tmux_name(name);
+        let snapshot = snapshot_jsonl_stems(cwd);
         match self.db.create_nexus_session(name, cwd, &tmux_name) {
             Ok(id) => {
+                self.jsonl_snapshots.insert(id.clone(), snapshot);
                 if let Some(gid) = group_id {
                     if let Err(e) = self.db.assign_session_to_group(&id, gid) {
                         self.status_message =
@@ -885,6 +912,14 @@ impl App {
                     None => sanitize_tmux_name(&session.session_id),
                 };
 
+                // Snapshot before fresh launch so we can detect the new JSONL
+                if session.claude_session_id.is_none() {
+                    self.jsonl_snapshots.insert(
+                        session.session_id.clone(),
+                        snapshot_jsonl_stems(&cwd),
+                    );
+                }
+
                 if let Err(e) = self.tmux.launch_claude_session(&tmux_name, &cwd, session.claude_session_id.as_deref()) {
                     self.status_message =
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
@@ -910,7 +945,7 @@ impl App {
     /// Suspend the TUI, attach to a tmux session, then restore the TUI.
     fn attach_tmux_session(&mut self, tmux_name: &str) {
         // Leave ratatui's alternate screen, raw mode, and bracketed paste so tmux can take over
-        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
 
@@ -919,7 +954,7 @@ impl App {
         // Restore ratatui's terminal state
         let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
 
         // Force a full redraw — ratatui's internal buffer is stale after tmux
         self.needs_full_redraw = true;
@@ -949,7 +984,7 @@ impl App {
             }
         };
 
-        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
 
@@ -960,7 +995,7 @@ impl App {
 
         let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
         self.needs_full_redraw = true;
 
         if let Err(e) = result {
@@ -1005,8 +1040,10 @@ impl App {
 
         let mut found_any = false;
         for (session_id, cwd) in &needs_detection {
-            if let Some(claude_id) = detect_claude_session_id(cwd) {
+            let snapshot = self.jsonl_snapshots.get(session_id);
+            if let Some(claude_id) = detect_claude_session_id(cwd, snapshot) {
                 let _ = self.db.set_claude_session_id(session_id, &claude_id);
+                self.jsonl_snapshots.remove(session_id);
                 found_any = true;
             }
         }
@@ -1087,9 +1124,31 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)
     result
 }
 
+/// Snapshot the set of `.jsonl` file stems in a project's Claude directory.
+/// Used before launching a fresh Claude session so we can later identify
+/// which JSONL file the new session created.
+fn snapshot_jsonl_stems(cwd: &str) -> HashSet<String> {
+    let project_dir_name = cwd.replace('/', "-").replace('.', "-");
+    let Some(project_dir) = dirs::home_dir().map(|h| h.join(".claude/projects").join(&project_dir_name)) else {
+        return HashSet::new();
+    };
+    std::fs::read_dir(&project_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
+        .filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+        .collect()
+}
+
 /// Detect the Claude Code session ID for a project by scanning
-/// `~/.claude/projects/<project_dir>/` for the most recently modified `.jsonl` file.
-fn detect_claude_session_id(cwd: &str) -> Option<String> {
+/// `~/.claude/projects/<project_dir>/` for `.jsonl` files.
+///
+/// When `pre_launch` is provided, returns the first (newest) file NOT in the
+/// snapshot — i.e., the file created by the launch we're tracking.
+/// When `pre_launch` is `None`, falls back to "most recently modified" for
+/// backward compatibility (e.g., sessions restored from DB without a snapshot).
+fn detect_claude_session_id(cwd: &str, pre_launch: Option<&HashSet<String>>) -> Option<String> {
     let project_dir_name = cwd.replace('/', "-").replace('.', "-");
     let project_dir = dirs::home_dir()?
         .join(".claude/projects")
@@ -1117,9 +1176,17 @@ fn detect_claude_session_id(cwd: &str) -> Option<String> {
         tb.cmp(&ta) // newest first
     });
 
-    entries
-        .first()
-        .and_then(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+    if let Some(snapshot) = pre_launch {
+        // Find the first (newest) file NOT in the pre-launch snapshot
+        entries.iter()
+            .filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+            .find(|stem| !snapshot.contains(stem))
+    } else {
+        // Fallback: most recently modified
+        entries
+            .first()
+            .and_then(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+    }
 }
 
 fn find_session_in_tree<'a>(tree: &'a [TreeNode], session_id: &str) -> Option<&'a SessionSummary> {
