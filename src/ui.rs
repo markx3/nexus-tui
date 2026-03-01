@@ -17,14 +17,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 
     // Fill background
     frame.render_widget(
-        Block::default().style(Style::new().bg(theme::BG)),
+        Block::default().style(Style::new().bg(theme::bg())),
         area,
     );
 
     // Terminal too small guard
     if area.width < 80 || area.height < 24 {
         let msg = Paragraph::new("Terminal too small. Minimum: 80x24")
-            .style(Style::new().fg(theme::HAZARD).bg(theme::BG));
+            .style(Style::new().fg(theme::hazard()).bg(theme::bg()));
         frame.render_widget(msg, area);
         return;
     }
@@ -118,7 +118,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
             height: 1,
         };
         let status = Paragraph::new(format!(" {msg} "))
-            .style(Style::new().fg(theme::HAZARD).bg(theme::SURFACE));
+            .style(Style::new().fg(theme::hazard()).bg(theme::surface()));
         frame.render_widget(status, msg_area);
     }
 
@@ -164,8 +164,8 @@ fn render_text_input(frame: &mut Frame, panel_area: Rect, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::NEON_CYAN))
-        .style(Style::new().bg(theme::SURFACE));
+        .border_style(Style::new().fg(theme::primary()))
+        .style(Style::new().bg(theme::surface()));
 
     let inner = block.inner(prompt_area);
     frame.render_widget(Clear, prompt_area);
@@ -175,10 +175,10 @@ fn render_text_input(frame: &mut Frame, panel_area: Rect, app: &App) {
     let content = Line::from(vec![
         Span::styled(
             format!("{label}: "),
-            Style::new().fg(theme::NEON_CYAN).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(&app.input_buffer, Style::new().fg(theme::TEXT)),
-        Span::styled(cursor_char, Style::new().fg(theme::NEON_CYAN)),
+        Span::styled(&app.input_buffer, Style::new().fg(theme::text())),
+        Span::styled(cursor_char, Style::new().fg(theme::primary())),
     ]);
 
     frame.render_widget(Paragraph::new(content), inner);
@@ -205,8 +205,8 @@ fn render_confirm(frame: &mut Frame, panel_area: Rect, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::HAZARD))
-        .style(Style::new().bg(theme::SURFACE));
+        .border_style(Style::new().fg(theme::hazard()))
+        .style(Style::new().bg(theme::surface()));
 
     let inner = block.inner(prompt_area);
     frame.render_widget(Clear, prompt_area);
@@ -214,7 +214,7 @@ fn render_confirm(frame: &mut Frame, panel_area: Rect, app: &App) {
 
     let content = Paragraph::new(Span::styled(
         message,
-        Style::new().fg(theme::HAZARD).add_modifier(Modifier::BOLD),
+        Style::new().fg(theme::hazard()).add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(content, inner);
 }
@@ -242,11 +242,11 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             title,
-            Style::new().fg(theme::NEON_CYAN).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::NEON_CYAN))
-        .style(Style::new().bg(theme::SURFACE));
+        .border_style(Style::new().fg(theme::primary()))
+        .style(Style::new().bg(theme::surface()));
 
     let inner = block.inner(picker_area);
     frame.render_widget(Clear, picker_area);
@@ -260,9 +260,9 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
             let is_selected = i == app.picker_cursor;
             let prefix = if is_selected { "> " } else { "  " };
             let style = if is_selected {
-                Style::new().fg(theme::NEON_CYAN).add_modifier(Modifier::BOLD)
+                Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(theme::TEXT)
+                Style::new().fg(theme::text())
             };
             Line::from(Span::styled(format!("{prefix}{name}"), style))
         })
@@ -291,6 +291,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+x", "Kill tmux (mark detached)"),
         ("Alt+H", "Toggle past/dead sessions"),
         ("Alt+f", "Fullscreen attach to session"),
+        ("Alt+t / Alt+T", "Cycle theme"),
         ("", ""),
         ("", "All other keys are forwarded to"),
         ("", "the embedded Claude Code session."),
@@ -307,11 +308,11 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .title(Span::styled(
             " KEYBINDINGS ",
-            Style::new().fg(theme::NEON_CYAN).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme::NEON_CYAN))
-        .style(Style::new().bg(theme::BG));
+        .border_style(Style::new().fg(theme::primary()))
+        .style(Style::new().bg(theme::bg()));
 
     let inner = block.inner(overlay);
     frame.render_widget(Clear, overlay);
@@ -323,15 +324,15 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             if key.is_empty() {
                 Line::from(Span::styled(
                     format!("  {desc}"),
-                    Style::new().fg(theme::DIM),
+                    Style::new().fg(theme::dim()),
                 ))
             } else {
                 Line::from(vec![
                     Span::styled(
                         format!("{key:>18}"),
-                        Style::new().fg(theme::NEON_CYAN),
+                        Style::new().fg(theme::primary()),
                     ),
-                    Span::styled(format!("  {desc}"), Style::new().fg(theme::TEXT)),
+                    Span::styled(format!("  {desc}"), Style::new().fg(theme::text())),
                 ])
             }
         })

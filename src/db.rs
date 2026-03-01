@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS session_groups (
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE,
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -105,6 +110,28 @@ impl Database {
                 Err(e) => return Err(e).wrap_err("migration failed"),
             }
         }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings (key-value)
+    // -----------------------------------------------------------------------
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let result = stmt
+            .query_row(params![key], |row| row.get::<_, String>(0))
+            .ok();
+        Ok(result)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
         Ok(())
     }
 
@@ -746,6 +773,23 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].1, "A");
         assert_eq!(groups[1].1, "B");
+    }
+
+    #[test]
+    fn test_get_set_setting_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.get_setting("theme_index").unwrap().is_none());
+
+        db.set_setting("theme_index", "3").unwrap();
+        assert_eq!(db.get_setting("theme_index").unwrap(), Some("3".to_string()));
+    }
+
+    #[test]
+    fn test_set_setting_overwrites() {
+        let db = Database::open_in_memory().unwrap();
+        db.set_setting("theme_index", "1").unwrap();
+        db.set_setting("theme_index", "5").unwrap();
+        assert_eq!(db.get_setting("theme_index").unwrap(), Some("5".to_string()));
     }
 
     // Test helpers

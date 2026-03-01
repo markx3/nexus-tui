@@ -117,6 +117,8 @@ pub enum NexusCommand {
     ToggleHelp,
     Quit,
     ToggleDeadSessions,
+    NextTheme,
+    PrevTheme,
 }
 
 /// Result from routing an event through the interactor.

@@ -69,6 +69,13 @@ impl App {
         tmux_sessions: Vec<TmuxSessionInfo>,
         db: Database,
     ) -> Self {
+        // Restore persisted theme before fx_boot() so boot animation uses correct colors
+        if let Ok(Some(idx_str)) = db.get_setting("theme_index") {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                theme::set_theme(idx);
+            }
+        }
+
         let tree_state = TreeState::new(&tree);
         let selection = SelectionState::default();
         let cached_counts = count_sessions(&tree);
@@ -284,6 +291,22 @@ impl App {
                 self.show_dead_sessions = !self.show_dead_sessions;
                 self.refresh_tree();
             }
+            NexusCommand::NextTheme => {
+                theme::next_theme();
+                self.status_message = Some((
+                    format!("Theme: {}", theme::current_name()),
+                    Instant::now(),
+                ));
+                self.persist_theme();
+            }
+            NexusCommand::PrevTheme => {
+                theme::prev_theme();
+                self.status_message = Some((
+                    format!("Theme: {}", theme::current_name()),
+                    Instant::now(),
+                ));
+                self.persist_theme();
+            }
         }
     }
 
@@ -323,6 +346,8 @@ impl App {
             KeyCode::Char('m') => self.start_move_session(),
             KeyCode::Char('d') => self.start_delete(),
             KeyCode::Char('x') => self.kill_tmux_session(),
+            KeyCode::Char('t') => self.dispatch_nexus_command(NexusCommand::NextTheme),
+            KeyCode::Char('T') => self.dispatch_nexus_command(NexusCommand::PrevTheme),
             _ => {
                 if let Some(action) = self.tree_state.handle_key(key, &self.tree) {
                     self.handle_tree_action(action);
@@ -376,6 +401,10 @@ impl App {
         } else if let Some(ref mut is) = self.interactor_state {
             is.clear();
         }
+    }
+
+    fn persist_theme(&self) {
+        let _ = self.db.set_setting("theme_index", &theme::current_index().to_string());
     }
 
     // -----------------------------------------------------------------------
