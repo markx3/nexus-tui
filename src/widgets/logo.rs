@@ -19,12 +19,23 @@ struct Agent {
 }
 
 const AGENTS: &[Agent] = &[
-    Agent { base_angle: 0.0,              radius: 0.85, speed: 0.30, symbol: '◆' },
-    Agent { base_angle: 1.047,            radius: 0.70, speed: 0.45, symbol: '∙' },
-    Agent { base_angle: 2.094,            radius: 0.90, speed: 0.25, symbol: '·' },
-    Agent { base_angle: 3.141,            radius: 0.75, speed: 0.40, symbol: '◆' },
-    Agent { base_angle: 4.189,            radius: 0.60, speed: 0.50, symbol: '·' },
-    Agent { base_angle: 5.236,            radius: 0.80, speed: 0.35, symbol: '∙' },
+    // Outer ring — slow, wide orbit
+    Agent { base_angle: 0.0,   radius: 0.95, speed: 0.20, symbol: '◆' },
+    Agent { base_angle: 1.26,  radius: 0.90, speed: 0.22, symbol: '·' },
+    Agent { base_angle: 2.51,  radius: 0.92, speed: 0.18, symbol: '·' },
+    Agent { base_angle: 3.77,  radius: 0.88, speed: 0.24, symbol: '◆' },
+    Agent { base_angle: 5.03,  radius: 0.93, speed: 0.21, symbol: '·' },
+    // Mid ring — moderate speed
+    Agent { base_angle: 0.52,  radius: 0.65, speed: 0.35, symbol: '∙' },
+    Agent { base_angle: 1.57,  radius: 0.70, speed: 0.38, symbol: '◆' },
+    Agent { base_angle: 2.62,  radius: 0.60, speed: 0.42, symbol: '∙' },
+    Agent { base_angle: 3.67,  radius: 0.68, speed: 0.36, symbol: '·' },
+    Agent { base_angle: 4.71,  radius: 0.72, speed: 0.40, symbol: '∙' },
+    // Inner ring — fast, tight orbit
+    Agent { base_angle: 0.79,  radius: 0.35, speed: 0.55, symbol: '∙' },
+    Agent { base_angle: 2.36,  radius: 0.30, speed: 0.60, symbol: '·' },
+    Agent { base_angle: 3.93,  radius: 0.38, speed: 0.52, symbol: '∙' },
+    Agent { base_angle: 5.50,  radius: 0.33, speed: 0.58, symbol: '·' },
 ];
 
 // ---------------------------------------------------------------------------
