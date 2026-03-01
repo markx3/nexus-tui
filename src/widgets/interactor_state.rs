@@ -181,6 +181,12 @@ impl InteractorState {
                         KeyCode::Char('H') => {
                             RouteResult::NexusCommand(NexusCommand::ToggleDeadSessions)
                         }
+                        KeyCode::Char('t') => {
+                            RouteResult::NexusCommand(NexusCommand::NextTheme)
+                        }
+                        KeyCode::Char('T') => {
+                            RouteResult::NexusCommand(NexusCommand::PrevTheme)
+                        }
                         _ => RouteResult::Ignored,
                     };
                 }

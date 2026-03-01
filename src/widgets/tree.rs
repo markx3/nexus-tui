@@ -54,7 +54,7 @@ pub fn render_tree(
     let flat = state.visible_nodes(tree);
     if flat.is_empty() {
         let empty = Paragraph::new("No sessions. Press 'n' to create one.")
-            .style(Style::new().fg(theme::DIM));
+            .style(Style::new().fg(theme::dim()));
         frame.render_widget(empty, inner);
         return;
     }
@@ -76,7 +76,7 @@ pub fn render_tree(
     if start > 0 {
         lines.push(Line::from(Span::styled(
             "  \u{25B2} more above",
-            Style::new().fg(theme::DIM),
+            Style::new().fg(theme::dim()),
         )));
     }
 
@@ -107,28 +107,28 @@ pub fn render_tree(
                     }
                 };
 
-                let icon_color = theme::NEON_CYAN;
-                let text_color = if is_selected { theme::TEXT } else { theme::DIM };
+                let icon_color = theme::primary();
+                let text_color = if is_selected { theme::text() } else { theme::dim() };
                 let count_str = format!(" ({})", child_count);
 
                 Line::from(vec![
                     Span::raw(*indent),
                     Span::styled(icon_str, Style::new().fg(icon_color)),
                     Span::styled(format!(" {}", name), Style::new().fg(text_color)),
-                    Span::styled(count_str, Style::new().fg(theme::DIM)),
+                    Span::styled(count_str, Style::new().fg(theme::dim())),
                 ])
             }
             FlatNodeKind::Session { summary } => {
                 let (icon_str, icon_color, name_color) = match summary.status {
-                    SessionStatus::Active => (ICON_ACTIVE, theme::ACID_GREEN, theme::ACID_GREEN),
+                    SessionStatus::Active => (ICON_ACTIVE, theme::secondary(), theme::secondary()),
                     SessionStatus::Detached => {
                         if time_utils::is_stale(&summary.last_active, 7 * 86400) {
-                            (ICON_DETACHED, theme::DIM, theme::DIM)
+                            (ICON_DETACHED, theme::dim(), theme::dim())
                         } else {
-                            (ICON_DETACHED, theme::TEXT, theme::TEXT)
+                            (ICON_DETACHED, theme::text(), theme::text())
                         }
                     }
-                    SessionStatus::Dead => (ICON_DEAD, theme::DIM, theme::DIM),
+                    SessionStatus::Dead => (ICON_DEAD, theme::dim(), theme::dim()),
                 };
 
                 let rel_time = time_utils::relative_time(&summary.last_active);
@@ -142,7 +142,7 @@ pub fn render_tree(
                     ),
                     Span::styled(
                         format!("  {}", rel_time),
-                        Style::new().fg(theme::DIM),
+                        Style::new().fg(theme::dim()),
                     ),
                 ];
 
@@ -150,12 +150,12 @@ pub fn render_tree(
                 if summary.status == SessionStatus::Detached {
                     spans.push(Span::styled(
                         " [detached]",
-                        Style::new().fg(theme::DIM).add_modifier(Modifier::DIM),
+                        Style::new().fg(theme::dim()).add_modifier(Modifier::DIM),
                     ));
                 } else if summary.status == SessionStatus::Dead {
                     spans.push(Span::styled(
                         " [dead]",
-                        Style::new().fg(theme::DIM).add_modifier(Modifier::DIM),
+                        Style::new().fg(theme::dim()).add_modifier(Modifier::DIM),
                     ));
                 }
 
@@ -166,9 +166,9 @@ pub fn render_tree(
         // Apply selection highlight
         let line = if is_selected {
             let bg = if focused {
-                ratatui::style::Color::Rgb(30, 35, 60)
+                theme::derive_selection_bg()
             } else {
-                ratatui::style::Color::Rgb(25, 28, 45)
+                theme::derive_unfocused_selection_bg()
             };
             Line::from(
                 line.spans
@@ -187,7 +187,7 @@ pub fn render_tree(
     if end < flat.len() {
         lines.push(Line::from(Span::styled(
             "  \u{25BC} more below",
-            Style::new().fg(theme::DIM),
+            Style::new().fg(theme::dim()),
         )));
     }
 
