@@ -36,10 +36,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     ])
     .areas(area);
 
-    // Main area: tree (13%) + right column (87%)
+    // Main area: tree (13%) + right column (fills remainder)
     let [left_panel, right_column] = Layout::horizontal([
         Constraint::Percentage(13),
-        Constraint::Percentage(87),
+        Constraint::Fill(1),
     ])
     .areas(main_area);
 
