@@ -98,6 +98,7 @@ pub enum InputContext {
     ConfirmDeleteSession { session_id: String, tmux_name: Option<String> },
     ConfirmDeleteGroup { group_id: GroupId },
     MoveSession { session_id: String },
+    NewSessionGroup { name: String, cwd: String },
 }
 
 /// Nexus commands triggered by Alt+key in the interactor.

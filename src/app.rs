@@ -425,9 +425,26 @@ impl App {
                 self.input_context = Some(InputContext::NewSessionCwd { name: buffer });
             }
             InputContext::NewSessionCwd { name } => {
-                self.create_session(&name, &buffer);
-                self.input_mode = InputMode::Normal;
-                self.input_buffer.clear();
+                match self.db.get_all_groups() {
+                    Ok(groups) if !groups.is_empty() => {
+                        // Prepend "Ungrouped" sentinel (id 0)
+                        let mut picker = vec![(0i64, "Ungrouped".to_string())];
+                        picker.extend(groups);
+                        self.picker_cursor = self.hovered_group_picker_index(&picker);
+                        self.picker_groups = picker;
+                        self.input_mode = InputMode::GroupPicker;
+                        self.input_context = Some(InputContext::NewSessionGroup {
+                            name,
+                            cwd: buffer,
+                        });
+                    }
+                    _ => {
+                        // No groups — create ungrouped
+                        self.create_session(&name, &buffer, None);
+                        self.input_mode = InputMode::Normal;
+                        self.input_buffer.clear();
+                    }
+                }
             }
             InputContext::RenameSession { session_id } => {
                 if let Err(e) = self.db.update_session_name(&session_id, &buffer) {
@@ -537,14 +554,23 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if let Some((gid, _)) = self.picker_groups.get(self.picker_cursor) {
-                    let gid = *gid;
-                    if let Some(InputContext::MoveSession { ref session_id }) = self.input_context {
-                        let sid = session_id.clone();
-                        if let Err(e) = self.db.move_session_to_group(&sid, gid) {
-                            self.status_message =
-                                Some((format!("move failed: {e}"), Instant::now()));
+                let gid = self.picker_groups.get(self.picker_cursor).map(|(g, _)| *g);
+                match self.input_context.take() {
+                    Some(InputContext::MoveSession { session_id }) => {
+                        if let Some(gid) = gid {
+                            if let Err(e) = self.db.move_session_to_group(&session_id, gid) {
+                                self.status_message =
+                                    Some((format!("move failed: {e}"), Instant::now()));
+                            }
                         }
+                    }
+                    Some(InputContext::NewSessionGroup { name, cwd }) => {
+                        // gid 0 is the "Ungrouped" sentinel
+                        let group = gid.filter(|&id| id != 0);
+                        self.create_session(&name, &cwd, group);
+                    }
+                    other => {
+                        self.input_context = other;
                     }
                 }
                 self.input_mode = InputMode::Normal;
@@ -592,6 +618,34 @@ impl App {
                 self.input_buffer = current_name;
             }
             None => {}
+        }
+    }
+
+    /// Return the picker index matching the group the cursor currently sits in
+    /// (either a group node itself, or the parent group of a session).  Falls
+    /// back to 0 (the "Ungrouped" sentinel when present, or first entry).
+    fn hovered_group_picker_index(&mut self, picker: &[(GroupId, String)]) -> usize {
+        let target = self.tree_state.selected_target(&self.tree);
+        let group_id = match target {
+            Some(SelectionTarget::Group(gid)) => Some(gid),
+            Some(SelectionTarget::Session(ref sid)) => {
+                // Walk the tree to find the parent group of this session
+                self.tree.iter().find_map(|node| {
+                    if let TreeNode::Group(g) = node {
+                        let has_child = g.children.iter().any(|c| {
+                            matches!(c, TreeNode::Session(s) if s.session_id == *sid)
+                        });
+                        if has_child { Some(g.id) } else { None }
+                    } else {
+                        None
+                    }
+                })
+            }
+            None => None,
+        };
+        match group_id {
+            Some(gid) => picker.iter().position(|(id, _)| *id == gid).unwrap_or(0),
+            None => 0,
         }
     }
 
@@ -663,10 +717,16 @@ impl App {
     // Session creation + launch
     // -----------------------------------------------------------------------
 
-    fn create_session(&mut self, name: &str, cwd: &str) {
+    fn create_session(&mut self, name: &str, cwd: &str, group_id: Option<GroupId>) {
         let tmux_name = sanitize_tmux_name(name);
         match self.db.create_nexus_session(name, cwd, &tmux_name) {
-            Ok(_id) => {
+            Ok(id) => {
+                if let Some(gid) = group_id {
+                    if let Err(e) = self.db.assign_session_to_group(&id, gid) {
+                        self.status_message =
+                            Some((format!("group assign failed: {e}"), Instant::now()));
+                    }
+                }
                 if self.tmux_available {
                     if let Err(e) = self.tmux.launch_claude_session(&tmux_name, cwd) {
                         self.status_message =
@@ -675,9 +735,12 @@ impl App {
                         return;
                     }
                     let _ = self.tmux.configure_server();
-                    self.attach_tmux_session(&tmux_name);
                 }
+                // Select the new session in the tree so the interactor picks it up
+                self.selection.selected = Some(SelectionTarget::Session(id));
                 self.refresh_tree();
+                self.sync_interactor_to_selection();
+                self.ensure_session_launched();
             }
             Err(e) => {
                 self.status_message =

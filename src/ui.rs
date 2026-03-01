@@ -234,9 +234,14 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
         height: picker_height,
     };
 
+    let title = if matches!(app.input_context, Some(InputContext::NewSessionGroup { .. })) {
+        " Select group "
+    } else {
+        " Move to group "
+    };
     let block = Block::default()
         .title(Span::styled(
-            " Move to group ",
+            title,
             Style::new().fg(theme::NEON_CYAN).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
