@@ -51,6 +51,9 @@ pub struct App {
     // Group picker state
     pub(crate) picker_groups: Vec<(GroupId, String)>,
     pub(crate) picker_cursor: usize,
+    // Path completion state (active during NewSessionCwd input)
+    pub(crate) path_suggestions: Vec<String>,
+    pub(crate) path_suggestion_cursor: usize,
     // Set after returning from tmux attach to force a full redraw
     needs_full_redraw: bool,
     // Session interactor state (None if tmux unavailable)
@@ -109,6 +112,8 @@ impl App {
             show_dead_sessions: false,
             picker_groups: Vec::new(),
             picker_cursor: 0,
+            path_suggestions: Vec::new(),
+            path_suggestion_cursor: 0,
             needs_full_redraw: false,
             interactor_state,
             logo_frame: 0,
@@ -383,26 +388,74 @@ impl App {
     // -----------------------------------------------------------------------
 
     fn handle_text_input_key(&mut self, key: KeyEvent) {
+        let is_cwd = matches!(self.input_context, Some(InputContext::NewSessionCwd { .. }));
+
         match key.code {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
                 self.input_buffer.clear();
                 self.input_context = None;
+                self.path_suggestions.clear();
+                self.path_suggestion_cursor = 0;
+            }
+            KeyCode::Tab if is_cwd && !self.path_suggestions.is_empty() => {
+                // Accept highlighted suggestion
+                if let Some(suggestion) = self.path_suggestions.get(self.path_suggestion_cursor).cloned() {
+                    self.input_buffer = suggestion;
+                    if crate::path_complete::is_directory(&self.input_buffer) {
+                        if !self.input_buffer.ends_with('/') {
+                            self.input_buffer.push('/');
+                        }
+                    }
+                }
+                self.refresh_path_suggestions();
+            }
+            KeyCode::Up | KeyCode::Char('k') if is_cwd && !self.path_suggestions.is_empty() => {
+                if self.path_suggestion_cursor == 0 {
+                    self.path_suggestion_cursor = self.path_suggestions.len() - 1;
+                } else {
+                    self.path_suggestion_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if is_cwd && !self.path_suggestions.is_empty() => {
+                self.path_suggestion_cursor =
+                    (self.path_suggestion_cursor + 1) % self.path_suggestions.len();
             }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
+                if is_cwd {
+                    self.refresh_path_suggestions();
+                }
             }
             KeyCode::Enter => {
-                let buffer = self.input_buffer.clone();
+                let mut buffer = self.input_buffer.clone();
                 if buffer.trim().is_empty() {
                     return;
                 }
+                // Expand ~ before passing to process_text_input
+                if is_cwd && (buffer == "~" || buffer.starts_with("~/")) {
+                    if let Some(home) = dirs::home_dir() {
+                        buffer = format!("{}{}", home.display(), &buffer[1..]);
+                    }
+                }
+                self.path_suggestions.clear();
+                self.path_suggestion_cursor = 0;
                 self.process_text_input(buffer);
             }
             KeyCode::Char(c) => {
                 self.input_buffer.push(c);
+                if is_cwd {
+                    self.refresh_path_suggestions();
+                }
             }
             _ => {}
+        }
+    }
+
+    fn refresh_path_suggestions(&mut self) {
+        self.path_suggestions = crate::path_complete::complete_path(&self.input_buffer);
+        if self.path_suggestion_cursor >= self.path_suggestions.len() {
+            self.path_suggestion_cursor = 0;
         }
     }
 
@@ -423,6 +476,7 @@ impl App {
                     .unwrap_or_default();
                 self.input_buffer = default_cwd;
                 self.input_context = Some(InputContext::NewSessionCwd { name: buffer });
+                self.refresh_path_suggestions();
             }
             InputContext::NewSessionCwd { name } => {
                 match self.db.get_all_groups() {
