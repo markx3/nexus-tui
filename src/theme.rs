@@ -45,14 +45,13 @@ pub fn style_for(element: ThemeElement) -> Style {
         ThemeElement::FocusedBorder => Style::new().fg(NEON_CYAN),
         ThemeElement::UnfocusedBorder => Style::new().fg(BORDER),
         ThemeElement::TreeIndent => Style::new().fg(BORDER),
-        ThemeElement::RadarRing => Style::new().fg(BORDER),
-        ThemeElement::RadarSweep => Style::new().fg(NEON_CYAN),
-        ThemeElement::RadarBlip => Style::new().fg(ACID_GREEN),
         ThemeElement::TopBarLabel => Style::new().fg(DIM),
         ThemeElement::TopBarValue => Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
         ThemeElement::DetailLabel => Style::new().fg(DIM),
         ThemeElement::DetailValue => Style::new().fg(TEXT),
-        ThemeElement::ActivityGauge => Style::new().fg(ACID_GREEN),
+        ThemeElement::InteractorTitle => Style::new().fg(NEON_CYAN).add_modifier(Modifier::BOLD),
+        ThemeElement::ConversationHuman => Style::new().fg(NEON_CYAN),
+        ThemeElement::ConversationAssistant => Style::new().fg(ACID_GREEN),
     }
 }
 
@@ -63,9 +62,8 @@ pub fn border_for(panel: PanelType) -> BorderSet<'static> {
     match panel {
         PanelType::TopBar => ratatui::symbols::border::DOUBLE,
         PanelType::SessionTree => ratatui::symbols::border::PLAIN,
-        PanelType::Radar => ratatui::symbols::border::ROUNDED,
+        PanelType::SessionInteractor => ratatui::symbols::border::PLAIN,
         PanelType::Detail => ratatui::symbols::border::PLAIN,
-        PanelType::ActivityStrip => ratatui::symbols::border::DOUBLE,
     }
 }
 
@@ -75,10 +73,7 @@ pub fn border_style_for(panel: PanelType, is_focused: bool) -> Style {
         style_for(ThemeElement::FocusedBorder)
     } else {
         match panel {
-            // Top bar and activity strip always get the focused accent
-            PanelType::TopBar | PanelType::ActivityStrip => {
-                style_for(ThemeElement::FocusedBorder)
-            }
+            PanelType::TopBar => style_for(ThemeElement::FocusedBorder),
             _ => style_for(ThemeElement::UnfocusedBorder),
         }
     }
@@ -86,14 +81,12 @@ pub fn border_style_for(panel: PanelType, is_focused: bool) -> Style {
 
 // ── TachyonFX effect presets ──────────────────────────────────────────
 
-/// Staggered sweep-in boot animation for all five zones.
+/// Staggered sweep-in boot animation for three zones (top_bar, tree, right_column).
 pub fn fx_boot() -> Vec<Effect> {
     vec![
         fx::sweep_in(Motion::LeftToRight, 15, 0, BG, 400u32),
         fx::sweep_in(Motion::LeftToRight, 15, 0, BG, 500u32),
         fx::sweep_in(Motion::LeftToRight, 15, 0, BG, 500u32),
-        fx::sweep_in(Motion::LeftToRight, 15, 0, BG, 400u32),
-        fx::sweep_in(Motion::LeftToRight, 15, 0, BG, 300u32),
     ]
 }
 
@@ -121,14 +114,13 @@ mod tests {
             ThemeElement::FocusedBorder,
             ThemeElement::UnfocusedBorder,
             ThemeElement::TreeIndent,
-            ThemeElement::RadarRing,
-            ThemeElement::RadarSweep,
-            ThemeElement::RadarBlip,
             ThemeElement::TopBarLabel,
             ThemeElement::TopBarValue,
             ThemeElement::DetailLabel,
             ThemeElement::DetailValue,
-            ThemeElement::ActivityGauge,
+            ThemeElement::InteractorTitle,
+            ThemeElement::ConversationHuman,
+            ThemeElement::ConversationAssistant,
         ];
 
         let default_style = Style::default();
@@ -146,14 +138,12 @@ mod tests {
         let panels = [
             PanelType::TopBar,
             PanelType::SessionTree,
-            PanelType::Radar,
+            PanelType::SessionInteractor,
             PanelType::Detail,
-            PanelType::ActivityStrip,
         ];
 
         for panel in &panels {
             let set = border_for(*panel);
-            // Every border set must have non-empty corner characters
             assert!(
                 !set.top_left.is_empty(),
                 "{panel:?} border set has empty top_left"
@@ -180,8 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn fx_boot_returns_five_effects() {
-        assert_eq!(fx_boot().len(), 5);
+    fn fx_boot_returns_three_effects() {
+        assert_eq!(fx_boot().len(), 3);
     }
-
 }

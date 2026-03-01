@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use ratatui::text::Text;
+
 pub type SessionId = String;
 pub type GroupId = i64;
 
@@ -9,25 +11,9 @@ pub enum SelectionTarget {
     Group(GroupId),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SelectionState {
     pub selected: Option<SelectionTarget>,
-    pub focused_panel: FocusPanel,
-}
-
-impl Default for SelectionState {
-    fn default() -> Self {
-        Self {
-            selected: None,
-            focused_panel: FocusPanel::Tree,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusPanel {
-    Tree,
-    Radar,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -125,6 +111,8 @@ pub struct SessionSummary {
     pub tmux_name: Option<String>,
     pub created_by: SessionOrigin,
     pub created_at: String,
+    #[serde(skip)]
+    pub jsonl_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -147,6 +135,36 @@ pub enum TmuxSessionStatus {
     Idle,
 }
 
+// ---------------------------------------------------------------------------
+// Session content — what the interactor panel displays
+// ---------------------------------------------------------------------------
+
+/// Content to display in the session interactor panel.
+pub enum SessionContent {
+    /// Live terminal content, pre-parsed by capture worker thread.
+    Live(Text<'static>),
+    /// Conversation log from JSONL for sessions without a tmux pane.
+    ConversationLog(Vec<ConversationTurn>),
+}
+
+/// A single conversation turn from the JSONL log.
+#[derive(Debug, Clone)]
+pub struct ConversationTurn {
+    pub role: Role,
+    pub content: String,
+}
+
+/// Role in a conversation turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Human,
+    Assistant,
+}
+
+// ---------------------------------------------------------------------------
+// Theme / panel types
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum ThemeElement {
@@ -165,21 +183,19 @@ pub enum ThemeElement {
     FocusedBorder,
     UnfocusedBorder,
     TreeIndent,
-    RadarRing,
-    RadarSweep,
-    RadarBlip,
     TopBarLabel,
     TopBarValue,
     DetailLabel,
     DetailValue,
-    ActivityGauge,
+    InteractorTitle,
+    ConversationHuman,
+    ConversationAssistant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelType {
     TopBar,
     SessionTree,
-    Radar,
+    SessionInteractor,
     Detail,
-    ActivityStrip,
 }

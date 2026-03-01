@@ -425,6 +425,7 @@ fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
         status: SessionStatus::from_str(&status_str),
         created_by: SessionOrigin::from_str(&created_by_str),
         created_at: row.get(start + 8).unwrap_or_default(),
+        jsonl_path: None,
     }
 }
 

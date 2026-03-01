@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use color_eyre::eyre::{bail, WrapErr};
 use color_eyre::Result;
@@ -6,9 +7,24 @@ use color_eyre::Result;
 use crate::types::{TmuxSessionInfo, TmuxSessionStatus};
 
 // ---------------------------------------------------------------------------
+// SendKeysArgs — type-safe tmux send-keys arguments
+// ---------------------------------------------------------------------------
+
+/// Type-safe tmux send-keys arguments — prevents command injection by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendKeysArgs {
+    /// Literal text — always sent with `-l` flag. Safe for any user input.
+    Literal(String),
+    /// Named tmux key — compile-time constant from match arms on KeyCode.
+    /// Injection-safe because values are &'static str from the key_event_to_send_args match.
+    Named(&'static str),
+}
+
+// ---------------------------------------------------------------------------
 // TmuxManager
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct TmuxManager {
     socket_name: String,
 }
@@ -136,6 +152,257 @@ impl TmuxManager {
             bail!("tmux bind-key exited with status {}", status);
         }
         Ok(())
+    }
+
+    /// Capture the contents of a tmux pane with ANSI escape sequences.
+    ///
+    /// Uses `-p -e -N` flags: `-p` outputs to stdout, `-e` includes ANSI
+    /// escapes, `-N` preserves alternate screen content.
+    pub fn capture_pane(&self, session_name: &str) -> Result<String> {
+        Self::validate_target(session_name)?;
+        let output = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["capture-pane", "-t", session_name, "-p", "-e", "-N"])
+            .output()
+            .wrap_err("failed to run tmux capture-pane")?;
+
+        if !output.status.success() {
+            bail!(
+                "tmux capture-pane exited with status {} for '{}'",
+                output.status,
+                session_name
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Send keys to a tmux session. Fire-and-forget via `Command::spawn()`.
+    ///
+    /// `Literal` args use `-l` flag (safe for any user text).
+    /// `Named` args use the key name directly (compile-time constants).
+    pub fn send_keys(&self, session_name: &str, args: &SendKeysArgs) -> Result<()> {
+        Self::validate_target(session_name)?;
+        let mut cmd = Command::new("tmux");
+        cmd.args(["-L", &self.socket_name])
+            .args(["send-keys", "-t", session_name]);
+
+        match args {
+            SendKeysArgs::Literal(text) => {
+                cmd.args(["-l", text]);
+            }
+            SendKeysArgs::Named(key_name) => {
+                cmd.arg(key_name);
+            }
+        }
+
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .wrap_err("failed to spawn tmux send-keys")?;
+
+        Ok(())
+    }
+
+    /// Resize a tmux pane to the given dimensions.
+    pub fn resize_pane(&self, session_name: &str, cols: u16, rows: u16) -> Result<()> {
+        Self::validate_target(session_name)?;
+        let status = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args([
+                "resize-pane",
+                "-t",
+                session_name,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ])
+            .status()
+            .wrap_err("failed to run tmux resize-pane")?;
+
+        if !status.success() {
+            bail!(
+                "tmux resize-pane exited with status {} for '{}'",
+                status,
+                session_name
+            );
+        }
+        Ok(())
+    }
+
+    /// Load text into a named tmux buffer and paste it into a session.
+    ///
+    /// Uses `tmux load-buffer -b nexus-paste -` (stdin) followed by
+    /// `tmux paste-buffer -b nexus-paste -t <session> -d` (auto-cleanup).
+    pub fn load_buffer_and_paste(&self, session_name: &str, text: &str) -> Result<()> {
+        Self::validate_target(session_name)?;
+
+        // Load into named buffer via stdin
+        let mut child = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["load-buffer", "-b", "nexus-paste", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .wrap_err("failed to spawn tmux load-buffer")?;
+
+        if let Some(ref mut stdin) = child.stdin {
+            stdin.write_all(text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if !status.success() {
+            bail!("tmux load-buffer exited with status {}", status);
+        }
+
+        // Paste from named buffer into session (-d deletes buffer after paste)
+        let status = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args([
+                "paste-buffer",
+                "-b",
+                "nexus-paste",
+                "-t",
+                session_name,
+                "-d",
+            ])
+            .status()
+            .wrap_err("failed to run tmux paste-buffer")?;
+
+        if !status.success() {
+            bail!("tmux paste-buffer exited with status {}", status);
+        }
+        Ok(())
+    }
+
+    /// Validate that a session name is safe to use as a tmux target.
+    ///
+    /// Rejects names containing `.` (tmux target separator for session:window.pane)
+    /// or any characters outside `[a-zA-Z0-9_-]`.
+    fn validate_target(name: &str) -> Result<()> {
+        if name.is_empty() {
+            bail!("session name cannot be empty");
+        }
+        if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            Ok(())
+        } else {
+            bail!(
+                "invalid session name '{}': only [a-zA-Z0-9_-] allowed (no '.' — tmux separator)",
+                name
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public helpers
+// ---------------------------------------------------------------------------
+
+/// Sanitize a string for use as a tmux session name.
+///
+/// Replaces any character outside `[a-zA-Z0-9-]` with `-`.
+pub fn sanitize_tmux_name(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Key mapping: crossterm KeyEvent → tmux SendKeysArgs
+// ---------------------------------------------------------------------------
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// Map a crossterm `KeyEvent` to tmux `SendKeysArgs`.
+///
+/// Returns `None` for key events that should not be forwarded (e.g., Alt+key
+/// combos that are reserved for nexus commands).
+pub fn key_event_to_send_args(event: &KeyEvent) -> Option<SendKeysArgs> {
+    // Alt+key is reserved for nexus commands — never forward
+    if event.modifiers.contains(KeyModifiers::ALT) {
+        return None;
+    }
+
+    // Ctrl+key combos
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(c) = event.code {
+            if c.is_ascii_alphabetic() {
+                let lower = c.to_ascii_lowercase();
+                return Some(SendKeysArgs::Named(match lower {
+                    'a' => "C-a",
+                    'b' => "C-b",
+                    'c' => "C-c",
+                    'd' => "C-d",
+                    'e' => "C-e",
+                    'f' => "C-f",
+                    'g' => "C-g",
+                    'h' => "C-h",
+                    'i' => "C-i",
+                    'j' => "C-j",
+                    'k' => "C-k",
+                    'l' => "C-l",
+                    'm' => "C-m",
+                    'n' => "C-n",
+                    'o' => "C-o",
+                    'p' => "C-p",
+                    'q' => "C-q",
+                    'r' => "C-r",
+                    's' => "C-s",
+                    't' => "C-t",
+                    'u' => "C-u",
+                    'v' => "C-v",
+                    'w' => "C-w",
+                    'x' => "C-x",
+                    'y' => "C-y",
+                    'z' => "C-z",
+                    _ => return None,
+                }));
+            }
+            return None;
+        }
+    }
+
+    match event.code {
+        // Printable characters → Literal (safe for any text)
+        KeyCode::Char(c) => Some(SendKeysArgs::Literal(c.to_string())),
+
+        // Special keys → Named tmux key names
+        KeyCode::Enter => Some(SendKeysArgs::Named("Enter")),
+        KeyCode::Backspace => Some(SendKeysArgs::Named("BSpace")),
+        KeyCode::Tab => Some(SendKeysArgs::Named("Tab")),
+        KeyCode::Esc => Some(SendKeysArgs::Named("Escape")),
+        KeyCode::Up => Some(SendKeysArgs::Named("Up")),
+        KeyCode::Down => Some(SendKeysArgs::Named("Down")),
+        KeyCode::Left => Some(SendKeysArgs::Named("Left")),
+        KeyCode::Right => Some(SendKeysArgs::Named("Right")),
+        KeyCode::Home => Some(SendKeysArgs::Named("Home")),
+        KeyCode::End => Some(SendKeysArgs::Named("End")),
+        KeyCode::PageUp => Some(SendKeysArgs::Named("PageUp")),
+        KeyCode::PageDown => Some(SendKeysArgs::Named("PageDown")),
+        KeyCode::Delete => Some(SendKeysArgs::Named("DC")),
+        KeyCode::Insert => Some(SendKeysArgs::Named("IC")),
+        KeyCode::BackTab => Some(SendKeysArgs::Named("BTab")),
+
+        // Function keys F1-F12
+        KeyCode::F(n) => match n {
+            1 => Some(SendKeysArgs::Named("F1")),
+            2 => Some(SendKeysArgs::Named("F2")),
+            3 => Some(SendKeysArgs::Named("F3")),
+            4 => Some(SendKeysArgs::Named("F4")),
+            5 => Some(SendKeysArgs::Named("F5")),
+            6 => Some(SendKeysArgs::Named("F6")),
+            7 => Some(SendKeysArgs::Named("F7")),
+            8 => Some(SendKeysArgs::Named("F8")),
+            9 => Some(SendKeysArgs::Named("F9")),
+            10 => Some(SendKeysArgs::Named("F10")),
+            11 => Some(SendKeysArgs::Named("F11")),
+            12 => Some(SendKeysArgs::Named("F12")),
+            _ => None,
+        },
+
+        // Unhandled key codes (Null, CapsLock, etc.) — ignore
+        _ => None,
     }
 }
 
@@ -276,6 +543,41 @@ session-c:win3:0:\n";
         assert_eq!(windows[0].status, TmuxSessionStatus::Running);
     }
 
+    #[test]
+    fn test_validate_target_valid() {
+        assert!(TmuxManager::validate_target("my-session").is_ok());
+        assert!(TmuxManager::validate_target("test_123").is_ok());
+        assert!(TmuxManager::validate_target("ABC-xyz").is_ok());
+    }
+
+    #[test]
+    fn test_validate_target_rejects_dot() {
+        assert!(TmuxManager::validate_target("session.name").is_err());
+    }
+
+    #[test]
+    fn test_validate_target_rejects_spaces() {
+        assert!(TmuxManager::validate_target("my session").is_err());
+    }
+
+    #[test]
+    fn test_validate_target_rejects_empty() {
+        assert!(TmuxManager::validate_target("").is_err());
+    }
+
+    #[test]
+    fn test_validate_target_rejects_injection() {
+        assert!(TmuxManager::validate_target("sess;rm -rf /").is_err());
+        assert!(TmuxManager::validate_target("sess:window").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_tmux_name() {
+        assert_eq!(sanitize_tmux_name("hello-world"), "hello-world");
+        assert_eq!(sanitize_tmux_name("foo.bar/baz"), "foo-bar-baz");
+        assert_eq!(sanitize_tmux_name("a b c"), "a-b-c");
+    }
+
     // -- Integration tests (require tmux installed) ----------------------
 
     #[test]
@@ -320,5 +622,197 @@ session-c:win3:0:\n";
         mgr.launch_claude_session("kb-test", "/tmp").unwrap();
         mgr.setup_keybindings().unwrap();
         mgr.kill_session("kb-test").unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_capture_pane_returns_content() {
+        let mgr = TmuxManager::new("nexus-test-cap");
+        mgr.launch_claude_session("cap-test", "/tmp").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let content = mgr.capture_pane("cap-test").unwrap();
+        assert!(!content.is_empty());
+
+        mgr.kill_session("cap-test").unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_send_keys_reaches_session() {
+        let mgr = TmuxManager::new("nexus-test-sk");
+        mgr.launch_claude_session("sk-test", "/tmp").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        mgr.send_keys("sk-test", &SendKeysArgs::Literal("hello".to_string()))
+            .unwrap();
+        mgr.send_keys("sk-test", &SendKeysArgs::Named("Enter"))
+            .unwrap();
+
+        mgr.kill_session("sk-test").unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_resize_pane() {
+        let mgr = TmuxManager::new("nexus-test-rp");
+        mgr.launch_claude_session("rp-test", "/tmp").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        mgr.resize_pane("rp-test", 80, 24).unwrap();
+
+        mgr.kill_session("rp-test").unwrap();
+    }
+
+    #[test]
+    fn test_send_keys_args_variants() {
+        let lit = SendKeysArgs::Literal("hello".to_string());
+        let named = SendKeysArgs::Named("Enter");
+        assert_ne!(lit, named);
+        assert_eq!(lit, SendKeysArgs::Literal("hello".to_string()));
+        assert_eq!(named, SendKeysArgs::Named("Enter"));
+    }
+
+    // -- Key mapping tests ------------------------------------------------
+
+    fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn test_key_mapping_printable_chars() {
+        let result = key_event_to_send_args(&make_key(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(result, Some(SendKeysArgs::Literal("a".to_string())));
+
+        let result = key_event_to_send_args(&make_key(KeyCode::Char('Z'), KeyModifiers::SHIFT));
+        assert_eq!(result, Some(SendKeysArgs::Literal("Z".to_string())));
+    }
+
+    #[test]
+    fn test_key_mapping_unicode() {
+        let result = key_event_to_send_args(&make_key(KeyCode::Char('ñ'), KeyModifiers::NONE));
+        assert_eq!(result, Some(SendKeysArgs::Literal("ñ".to_string())));
+
+        let result = key_event_to_send_args(&make_key(KeyCode::Char('日'), KeyModifiers::NONE));
+        assert_eq!(result, Some(SendKeysArgs::Literal("日".to_string())));
+    }
+
+    #[test]
+    fn test_key_mapping_special_keys() {
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Enter"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Backspace, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("BSpace"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Tab"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Escape"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Delete, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("DC"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Insert, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("IC"))
+        );
+    }
+
+    #[test]
+    fn test_key_mapping_arrows() {
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Up, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Up"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Down, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Down"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Left, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Left"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Right, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Right"))
+        );
+    }
+
+    #[test]
+    fn test_key_mapping_nav_keys() {
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Home, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("Home"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::End, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("End"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::PageUp, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("PageUp"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::PageDown, KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("PageDown"))
+        );
+    }
+
+    #[test]
+    fn test_key_mapping_ctrl_keys() {
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(SendKeysArgs::Named("C-c"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            Some(SendKeysArgs::Named("C-a"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            Some(SendKeysArgs::Named("C-z"))
+        );
+        // Uppercase Ctrl+key should map to same lowercase
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Char('C'), KeyModifiers::CONTROL)),
+            Some(SendKeysArgs::Named("C-c"))
+        );
+    }
+
+    #[test]
+    fn test_key_mapping_function_keys() {
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("F1"))
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::F(12), KeyModifiers::NONE)),
+            Some(SendKeysArgs::Named("F12"))
+        );
+        // F13+ should be ignored
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::F(13), KeyModifiers::NONE)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_key_mapping_alt_returns_none() {
+        // Alt+key is reserved for nexus commands
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Char('j'), KeyModifiers::ALT)),
+            None
+        );
+        assert_eq!(
+            key_event_to_send_args(&make_key(KeyCode::Char('q'), KeyModifiers::ALT)),
+            None
+        );
     }
 }

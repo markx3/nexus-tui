@@ -29,29 +29,28 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         return;
     }
 
-    // Top-level: top bar, main area, bottom strip
-    let [top_bar, main_area, bottom_strip] = Layout::vertical([
+    // Top-level: top bar + main area (no bottom strip — activity removed)
+    let [top_bar, main_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Fill(1),
-        Constraint::Length(3),
     ])
     .areas(area);
 
-    // Main area: left panel, right column
+    // Main area: tree (25%) + right column (75%)
     let [left_panel, right_column] = Layout::horizontal([
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
+        Constraint::Percentage(25),
+        Constraint::Percentage(75),
     ])
     .areas(main_area);
 
-    // Right column: radar (top), detail (bottom)
-    let [radar_area, detail_area] = Layout::vertical([
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
+    // Right column: interactor (~83%) + detail (~17%)
+    let [interactor_area, detail_area] = Layout::vertical([
+        Constraint::Percentage(83),
+        Constraint::Percentage(17),
     ])
     .areas(right_column);
 
-    // Render each zone with real state
+    // Render each zone
     let (session_count, active_count) = app.session_counts();
     widgets::top_bar::render_top_bar(frame, top_bar, session_count, active_count);
 
@@ -60,32 +59,26 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         left_panel,
         &app.tree,
         &mut app.tree_state,
-        app.selection.focused_panel == FocusPanel::Tree,
+        true, // tree is always "focused" now (no focus switching)
     );
 
-    widgets::radar::render_radar(
-        frame,
-        radar_area,
-        &app.radar_state,
-        app.selection.focused_panel == FocusPanel::Radar,
-    );
+    // Placeholder for interactor panel (Phase 2 adds the real widget)
+    let interactor_block = Block::default()
+        .title(Span::styled(
+            " SESSION ",
+            theme::style_for(ThemeElement::InteractorTitle),
+        ))
+        .borders(Borders::ALL)
+        .border_set(theme::border_for(PanelType::SessionInteractor))
+        .border_style(theme::border_style_for(PanelType::SessionInteractor, false))
+        .style(theme::style_for(ThemeElement::Surface));
+    let interactor_msg = Paragraph::new("Select a session")
+        .style(theme::style_for(ThemeElement::Dim))
+        .block(interactor_block);
+    frame.render_widget(interactor_msg, interactor_area);
 
     let selected_session = app.selected_session();
-    widgets::detail::render_detail(
-        frame,
-        detail_area,
-        selected_session,
-        app.selection.focused_panel == FocusPanel::Radar,
-    );
-
-    let known_tmux_names = collect_tmux_names(&app.tree);
-    let tracked_sessions: Vec<_> = app
-        .tmux_sessions
-        .iter()
-        .filter(|s| known_tmux_names.contains(s.session_id.as_str()))
-        .cloned()
-        .collect();
-    widgets::activity::render_activity_strip(frame, bottom_strip, &tracked_sessions);
+    widgets::detail::render_detail(frame, detail_area, selected_session, false);
 
     // Input prompt overlay (renders at bottom of tree panel area)
     match app.input_mode {
@@ -103,10 +96,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 
     // Status message overlay
     if let Some((ref msg, _)) = app.status_message {
-        let msg_width = bottom_strip.width.min(msg.len() as u16 + 4);
+        let msg_width = area.width.min(msg.len() as u16 + 4);
         let msg_area = Rect {
-            x: bottom_strip.x,
-            y: bottom_strip.y.saturating_sub(1),
+            x: area.x,
+            y: area.y + area.height.saturating_sub(1),
             width: msg_width,
             height: 1,
         };
@@ -122,7 +115,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 
     // Apply TachyonFX boot effects (skip once done)
     if !app.boot_done {
-        let zones = [top_bar, left_panel, radar_area, detail_area, bottom_strip];
+        let zones = [top_bar, left_panel, right_column];
         for (effect, &zone) in app.boot_effects.iter_mut().zip(zones.iter()) {
             frame.render_effect(effect, zone, elapsed.into());
         }
@@ -266,7 +259,6 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let bindings: Vec<(&str, &str)> = vec![
         ("q / Q / Ctrl+C", "Quit Nexus"),
-        ("Tab", "Toggle focus Tree / Radar"),
         ("?", "Toggle this help"),
         ("j / Down", "Cursor down"),
         ("k / Up", "Cursor up"),
@@ -314,24 +306,6 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
-}
-
-/// Collect all tmux_name values from the session tree.
-fn collect_tmux_names(tree: &[TreeNode]) -> std::collections::HashSet<&str> {
-    let mut names = std::collections::HashSet::new();
-    for node in tree {
-        match node {
-            TreeNode::Session(s) => {
-                if let Some(ref n) = s.tmux_name {
-                    names.insert(n.as_str());
-                }
-            }
-            TreeNode::Group(g) => {
-                names.extend(collect_tmux_names(&g.children));
-            }
-        }
-    }
-    names
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

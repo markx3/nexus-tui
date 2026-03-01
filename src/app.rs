@@ -10,10 +10,9 @@ use tachyonfx::Effect;
 use crate::config::NexusConfig;
 use crate::db::Database;
 use crate::theme;
-use crate::tmux::TmuxManager;
+use crate::tmux::{sanitize_tmux_name, TmuxManager};
 use crate::types::*;
 use crate::ui;
-use crate::widgets::radar_state::RadarState;
 use crate::widgets::tree_state::{TreeAction, TreeState};
 
 const TICK_RATE: Duration = Duration::from_millis(16);
@@ -26,7 +25,6 @@ pub struct App {
     pub(crate) boot_effects: Vec<Effect>,
     pub(crate) tree: Vec<TreeNode>,
     pub(crate) tree_state: TreeState,
-    pub(crate) radar_state: RadarState,
     pub(crate) selection: SelectionState,
     pub(crate) tmux: TmuxManager,
     pub(crate) tmux_available: bool,
@@ -63,8 +61,6 @@ impl App {
         db: Database,
     ) -> Self {
         let tree_state = TreeState::new(&tree);
-        let mut radar_state = RadarState::new();
-        radar_state.compute_blips(&tree);
         let selection = SelectionState::default();
         let cached_counts = count_sessions(&tree);
 
@@ -75,7 +71,6 @@ impl App {
             boot_effects: theme::fx_boot(),
             tree,
             tree_state,
-            radar_state,
             selection,
             tmux,
             tmux_available,
@@ -102,9 +97,6 @@ impl App {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_tick);
             self.last_tick = now;
-
-            // Advance radar sweep
-            self.radar_state.advance_sweep(elapsed.as_secs_f64());
 
             // Poll tmux for active sessions periodically
             if self.tmux_available && now.duration_since(self.last_tmux_poll) >= TMUX_POLL_INTERVAL
@@ -178,18 +170,11 @@ impl App {
                 self.should_quit = true;
                 return;
             }
-            KeyCode::Tab => {
-                self.selection.focused_panel = match self.selection.focused_panel {
-                    FocusPanel::Tree => FocusPanel::Radar,
-                    FocusPanel::Radar => FocusPanel::Tree,
-                };
-                return;
-            }
             KeyCode::Char('?') => {
                 self.show_help = true;
                 return;
             }
-            KeyCode::Char('h') if self.selection.focused_panel == FocusPanel::Tree => {
+            KeyCode::Char('h') => {
                 self.show_dead_sessions = !self.show_dead_sessions;
                 self.refresh_tree();
                 return;
@@ -197,11 +182,7 @@ impl App {
             _ => {}
         }
 
-        // Panel-specific keys
-        match self.selection.focused_panel {
-            FocusPanel::Tree => self.handle_tree_key(key),
-            FocusPanel::Radar => self.handle_radar_key(key),
-        }
+        self.handle_tree_key(key);
     }
 
     fn handle_tree_key(&mut self, key: KeyEvent) {
@@ -222,41 +203,10 @@ impl App {
         }
     }
 
-    fn handle_radar_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.radar_state.move_cursor_next();
-                if let Some(id) = self.radar_state.selected_session() {
-                    self.selection.selected =
-                        Some(SelectionTarget::Session(id.to_string()));
-                    self.refresh_cached_selected();
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.radar_state.move_cursor_prev();
-                if let Some(id) = self.radar_state.selected_session() {
-                    self.selection.selected =
-                        Some(SelectionTarget::Session(id.to_string()));
-                    self.refresh_cached_selected();
-                }
-            }
-            KeyCode::Enter => {
-                if let Some(id) = self.radar_state.selected_session().map(str::to_string) {
-                    self.selection.selected =
-                        Some(SelectionTarget::Session(id.clone()));
-                    self.refresh_cached_selected();
-                    self.try_launch_session(&id);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn handle_tree_action(&mut self, action: TreeAction) {
         match action {
             TreeAction::Select(target) => {
                 if let SelectionTarget::Session(ref id) = target {
-                    self.radar_state.select_by_session_id(id);
                     let id_owned = id.clone();
                     self.selection.selected = Some(target);
                     self.refresh_cached_selected();
@@ -266,14 +216,9 @@ impl App {
                     self.refresh_cached_selected();
                 }
             }
-            TreeAction::ToggleExpand(_) => {
-                self.radar_state.compute_blips(&self.tree);
-            }
+            TreeAction::ToggleExpand(_) => {}
             TreeAction::ScrollDown | TreeAction::ScrollUp => {
                 if let Some(target) = self.tree_state.selected_target(&self.tree) {
-                    if let SelectionTarget::Session(ref id) = target {
-                        self.radar_state.select_by_session_id(id);
-                    }
                     self.selection.selected = Some(target);
                     self.refresh_cached_selected();
                 }
@@ -686,7 +631,6 @@ impl App {
         if let Ok(tree) = self.db.get_visible_tree(self.show_dead_sessions) {
             self.tree = tree;
             self.tree_state.invalidate_cache();
-            self.radar_state.compute_blips(&self.tree);
             self.cached_counts = count_sessions(&self.tree);
             self.refresh_cached_selected();
         }
@@ -798,13 +742,6 @@ fn reconcile_recursive(
             }
         }
     }
-}
-
-/// Sanitize a string for use as a tmux session name.
-fn sanitize_tmux_name(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------

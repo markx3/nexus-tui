@@ -1,3 +1,4 @@
+mod ansi;
 mod app;
 mod cli;
 pub(crate) mod config;
@@ -14,6 +15,7 @@ pub(crate) mod widgets;
 
 use clap::Parser;
 use color_eyre::Result;
+use tmux::sanitize_tmux_name;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -180,12 +182,6 @@ fn find_session_in_tree<'a>(
         }
     }
     None
-}
-
-fn sanitize_tmux_name(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
-        .collect()
 }
 
 fn print_tree(tree: &[types::TreeNode], depth: usize) {
