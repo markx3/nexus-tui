@@ -74,6 +74,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         widgets::logo::render_logo(frame, logo_area, app.logo_frame);
     }
 
+    // Clamp live_scroll_offset to max scrollable range before reading it
+    let inner_height = interactor_area.height.saturating_sub(2); // border top+bottom
+    if let Some(ref mut is) = app.interactor_state {
+        if let Some(SessionContent::Live(ref text)) = is.current_content {
+            let max_offset = (text.lines.len() as u16).saturating_sub(inner_height);
+            is.live_scroll_offset = is.live_scroll_offset.min(max_offset);
+        }
+    }
+
     // Render the session interactor
     let interactor_content = app.interactor_state.as_ref().and_then(|is| is.current_content.as_ref());
     let interactor_session_name = app
