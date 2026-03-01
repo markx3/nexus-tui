@@ -187,6 +187,9 @@ impl InteractorState {
                         KeyCode::Char('T') => {
                             RouteResult::NexusCommand(NexusCommand::PrevTheme)
                         }
+                        KeyCode::Char('l') => {
+                            RouteResult::NexusCommand(NexusCommand::OpenLazygit)
+                        }
                         _ => RouteResult::Ignored,
                     };
                 }

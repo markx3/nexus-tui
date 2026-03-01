@@ -8,7 +8,7 @@ Cyberpunk TUI session manager for [Claude Code](https://docs.anthropic.com/en/do
 cargo install --path .
 ```
 
-Requires [tmux](https://github.com/tmux/tmux) for embedded session management.
+Requires [tmux](https://github.com/tmux/tmux) for embedded session management and [lazygit](https://github.com/jesseduffield/lazygit) for the `Alt+L` git integration (optional).
 
 ## Terminal Configuration (macOS)
 

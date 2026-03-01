@@ -119,6 +119,7 @@ pub enum NexusCommand {
     ToggleDeadSessions,
     NextTheme,
     PrevTheme,
+    OpenLazygit,
 }
 
 /// Result from routing an event through the interactor.
@@ -143,6 +144,7 @@ pub struct SessionSummary {
     pub tmux_name: Option<String>,
     pub created_by: SessionOrigin,
     pub created_at: String,
+    pub claude_session_id: Option<String>,
     #[serde(skip)]
     pub jsonl_path: Option<PathBuf>,
 }

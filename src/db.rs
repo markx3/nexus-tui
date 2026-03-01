@@ -102,6 +102,7 @@ impl Database {
             "ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'dead'",
             "ALTER TABLE sessions ADD COLUMN created_by TEXT NOT NULL DEFAULT 'scanner'",
             "ALTER TABLE sessions ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE sessions ADD COLUMN claude_session_id TEXT",
         ];
         for sql in &additions {
             match self.conn.execute_batch(sql) {
@@ -170,11 +171,11 @@ impl Database {
         Ok(())
     }
 
-    /// Update a session's display name.
-    pub fn update_session_name(&self, session_id: &str, new_name: &str) -> Result<()> {
+    /// Update a session's display name and tmux name.
+    pub fn update_session_name(&self, session_id: &str, new_name: &str, new_tmux_name: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE sessions SET display_name = ?1 WHERE session_id = ?2",
-            params![new_name, session_id],
+            "UPDATE sessions SET display_name = ?1, tmux_name = ?2 WHERE session_id = ?3",
+            params![new_name, new_tmux_name, session_id],
         )?;
         Ok(())
     }
@@ -184,6 +185,15 @@ impl Database {
         self.conn.execute(
             "DELETE FROM sessions WHERE session_id = ?1",
             params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Store the Claude Code session ID for a Nexus session.
+    pub fn set_claude_session_id(&self, session_id: &str, claude_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET claude_session_id = ?1 WHERE session_id = ?2",
+            params![claude_id, session_id],
         )?;
         Ok(())
     }
@@ -302,7 +312,8 @@ impl Database {
         let grouped_sql = format!(
             "SELECT sg.group_id, s.session_id, s.display_name, s.cwd,
                     s.last_active, s.is_active,
-                    s.tmux_name, s.status, s.created_by, s.created_at
+                    s.tmux_name, s.status, s.created_by, s.created_at,
+                    s.claude_session_id
              FROM sessions s
              JOIN session_groups sg ON s.session_id = sg.session_id
              WHERE 1=1 {status_filter}
@@ -383,7 +394,8 @@ impl Database {
         let sql = format!(
             "SELECT s.session_id, s.display_name, s.cwd,
                     s.last_active, s.is_active,
-                    s.tmux_name, s.status, s.created_by, s.created_at
+                    s.tmux_name, s.status, s.created_by, s.created_at,
+                    s.claude_session_id
              FROM sessions s
              WHERE s.session_id NOT IN (SELECT session_id FROM session_groups)
              {status_filter}
@@ -452,6 +464,7 @@ fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
         status: SessionStatus::from_str(&status_str),
         created_by: SessionOrigin::from_str(&created_by_str),
         created_at: row.get(start + 8).unwrap_or_default(),
+        claude_session_id: row.get(start + 9).unwrap_or(None),
         jsonl_path: None,
     }
 }
@@ -511,11 +524,12 @@ mod tests {
             .create_nexus_session("old-name", "/tmp", "test")
             .unwrap();
 
-        db.update_session_name(&id, "new-name").unwrap();
+        db.update_session_name(&id, "new-name", "new-name").unwrap();
 
         let tree = db.get_tree().unwrap();
         let sess = find_session(&tree, &id).unwrap();
         assert_eq!(sess.display_name, "new-name");
+        assert_eq!(sess.tmux_name.as_deref(), Some("new-name"));
     }
 
     #[test]

@@ -154,11 +154,99 @@ fn render_text_input(frame: &mut Frame, panel_area: Rect, app: &App) {
         _ => "Input",
     };
 
+    let is_cwd = matches!(app.input_context, Some(InputContext::NewSessionCwd { .. }));
+    let has_suggestions = is_cwd && !app.path_suggestions.is_empty();
+
+    const VISIBLE_MAX: usize = 5;
+
     let prompt_height = 3u16;
+    let (visible_count, scroll_offset) = if has_suggestions {
+        let total = app.path_suggestions.len();
+        let vis = total.min(VISIBLE_MAX);
+        let offset = if total <= VISIBLE_MAX {
+            0
+        } else {
+            app.path_suggestion_cursor
+                .saturating_sub(VISIBLE_MAX / 2)
+                .min(total - VISIBLE_MAX)
+        };
+        (vis, offset)
+    } else {
+        (0, 0)
+    };
+    let suggestion_height = if has_suggestions {
+        visible_count as u16 + 2 // +2 for borders
+    } else {
+        0
+    };
+    let total_height = prompt_height + suggestion_height;
+
     let prompt_area = Rect {
         x: panel_area.x,
-        y: panel_area.y + panel_area.height.saturating_sub(prompt_height),
+        y: panel_area.y + panel_area.height.saturating_sub(total_height),
         width: panel_area.width,
+        height: total_height,
+    };
+
+    // Render suggestion dropdown above the input prompt
+    if has_suggestions {
+        let suggestion_area = Rect {
+            x: prompt_area.x,
+            y: prompt_area.y,
+            width: prompt_area.width,
+            height: suggestion_height,
+        };
+
+        let total = app.path_suggestions.len();
+        let can_scroll_up = scroll_offset > 0;
+        let can_scroll_down = scroll_offset + visible_count < total;
+        let scroll_indicator = match (can_scroll_up, can_scroll_down) {
+            (true, true) => " \u{25B2}\u{25BC} ",
+            (true, false) => " \u{25B2} ",
+            (false, true) => " \u{25BC} ",
+            (false, false) => "",
+        };
+
+        let mut suggestion_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(theme::primary()))
+            .style(Style::new().bg(theme::surface()));
+        if !scroll_indicator.is_empty() {
+            suggestion_block = suggestion_block.title(Span::styled(
+                scroll_indicator,
+                Style::new().fg(theme::dim()),
+            ));
+        }
+
+        let suggestion_inner = suggestion_block.inner(suggestion_area);
+        frame.render_widget(Clear, suggestion_area);
+        frame.render_widget(suggestion_block, suggestion_area);
+
+        let visible_slice = &app.path_suggestions[scroll_offset..scroll_offset + visible_count];
+        let lines: Vec<Line> = visible_slice
+            .iter()
+            .enumerate()
+            .map(|(i, path)| {
+                let global_index = scroll_offset + i;
+                let is_selected = global_index == app.path_suggestion_cursor;
+                let prefix = if is_selected { "> " } else { "  " };
+                let style = if is_selected {
+                    Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme::text())
+                };
+                Line::from(Span::styled(format!("{prefix}{path}"), style))
+            })
+            .collect();
+
+        frame.render_widget(Paragraph::new(lines), suggestion_inner);
+    }
+
+    // Render the text input prompt below suggestions
+    let input_area = Rect {
+        x: prompt_area.x,
+        y: prompt_area.y + suggestion_height,
+        width: prompt_area.width,
         height: prompt_height,
     };
 
@@ -167,9 +255,9 @@ fn render_text_input(frame: &mut Frame, panel_area: Rect, app: &App) {
         .border_style(Style::new().fg(theme::primary()))
         .style(Style::new().bg(theme::surface()));
 
-    let inner = block.inner(prompt_area);
-    frame.render_widget(Clear, prompt_area);
-    frame.render_widget(block, prompt_area);
+    let inner = block.inner(input_area);
+    frame.render_widget(Clear, input_area);
+    frame.render_widget(block, input_area);
 
     let cursor_char = "\u{2588}"; // █
     let content = Line::from(vec![
@@ -292,6 +380,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+H", "Toggle past/dead sessions"),
         ("Alt+f", "Fullscreen attach to session"),
         ("Alt+t / Alt+T", "Cycle theme"),
+        ("Alt+l", "Open lazygit in session cwd"),
         ("", ""),
         ("", "All other keys are forwarded to"),
         ("", "the embedded Claude Code session."),

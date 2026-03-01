@@ -56,6 +56,8 @@ pub struct App {
     pub(crate) path_suggestion_cursor: usize,
     // Set after returning from tmux attach to force a full redraw
     needs_full_redraw: bool,
+    // Dirty flag: only render when something changed
+    dirty: bool,
     // Session interactor state (None if tmux unavailable)
     pub(crate) interactor_state: Option<InteractorState>,
     // Logo animation state
@@ -122,6 +124,7 @@ impl App {
             path_suggestions: Vec::new(),
             path_suggestion_cursor: 0,
             needs_full_redraw: false,
+            dirty: true,
             interactor_state,
             logo_frame: 0,
             logo_last_advance: Instant::now(),
@@ -146,7 +149,9 @@ impl App {
 
             // Poll capture worker for new content
             if let Some(ref mut is) = self.interactor_state {
-                is.poll_content();
+                if is.poll_content() {
+                    self.dirty = true;
+                }
             }
 
             // Poll tmux for active sessions periodically
@@ -154,37 +159,48 @@ impl App {
             {
                 self.tmux_sessions = self.tmux.list_sessions().unwrap_or_default();
                 self.reconcile_tmux_state();
+                self.detect_claude_session_ids();
                 self.last_tmux_poll = now;
+                self.dirty = true;
             }
 
             // Advance logo animation frame
             if now.duration_since(self.logo_last_advance) >= LOGO_FRAME_INTERVAL {
                 self.logo_frame = self.logo_frame.wrapping_add(1);
                 self.logo_last_advance = now;
+                self.dirty = true;
             }
 
             // Auto-clear status message after 5 seconds
             if let Some((_, ts)) = &self.status_message {
                 if ts.elapsed() >= Duration::from_secs(5) {
                     self.status_message = None;
+                    self.dirty = true;
                 }
             }
 
             if self.needs_full_redraw {
                 terminal.clear()?;
                 self.needs_full_redraw = false;
+                self.dirty = true;
             }
-            terminal.draw(|frame| ui::draw(frame, self, elapsed))?;
+
+            // Only render when something changed
+            if self.dirty || !self.boot_done {
+                terminal.draw(|frame| ui::draw(frame, self, elapsed))?;
+                self.dirty = false;
+            }
 
             let poll_timeout = if self.boot_done {
-                TICK_RATE
+                if self.dirty { TICK_RATE } else { Duration::from_millis(100) }
             } else {
-                TICK_RATE.saturating_sub(now.elapsed())
+                TICK_RATE.saturating_sub(now.elapsed()).max(Duration::from_millis(1))
             };
 
             if event::poll(poll_timeout)? {
                 let ev = event::read()?;
                 self.handle_event(ev);
+                self.dirty = true;
             }
         }
 
@@ -304,6 +320,7 @@ impl App {
                 ));
                 self.persist_theme();
             }
+            NexusCommand::OpenLazygit => self.open_lazygit(),
             NexusCommand::PrevTheme => {
                 theme::prev_theme();
                 self.status_message = Some((
@@ -530,7 +547,16 @@ impl App {
                 }
             }
             InputContext::RenameSession { session_id } => {
-                if let Err(e) = self.db.update_session_name(&session_id, &buffer) {
+                let new_tmux_name = sanitize_tmux_name(&buffer);
+                // Rename the live tmux session if it exists
+                if let Some(old_tmux) = find_session_in_tree(&self.tree, &session_id)
+                    .and_then(|s| s.tmux_name.as_deref())
+                {
+                    if self.tmux_available {
+                        let _ = self.tmux.rename_session(old_tmux, &new_tmux_name);
+                    }
+                }
+                if let Err(e) = self.db.update_session_name(&session_id, &buffer, &new_tmux_name) {
                     self.status_message =
                         Some((format!("rename failed: {e}"), Instant::now()));
                 }
@@ -811,7 +837,7 @@ impl App {
                     }
                 }
                 if self.tmux_available {
-                    if let Err(e) = self.tmux.launch_claude_session(&tmux_name, cwd) {
+                    if let Err(e) = self.tmux.launch_claude_session(&tmux_name, cwd, None) {
                         self.status_message =
                             Some((format!("tmux launch failed: {e}"), Instant::now()));
                         self.refresh_tree();
@@ -859,7 +885,7 @@ impl App {
                     None => sanitize_tmux_name(&session.session_id),
                 };
 
-                if let Err(e) = self.tmux.launch_claude_session(&tmux_name, &cwd) {
+                if let Err(e) = self.tmux.launch_claude_session(&tmux_name, &cwd, session.claude_session_id.as_deref()) {
                     self.status_message =
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
                     return;
@@ -910,6 +936,38 @@ impl App {
         self.sync_interactor_to_selection();
     }
 
+    /// Suspend the TUI, open lazygit in the selected session's cwd, then restore.
+    fn open_lazygit(&mut self) {
+        let cwd = match self.cached_selected.as_ref().and_then(|s| s.cwd.as_ref()) {
+            Some(c) => c.clone(),
+            None => {
+                self.status_message = Some((
+                    "No session selected or no cwd available".into(),
+                    Instant::now(),
+                ));
+                return;
+            }
+        };
+
+        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+
+        let result = std::process::Command::new("lazygit")
+            .arg("-p")
+            .arg(&cwd)
+            .status();
+
+        let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+        self.needs_full_redraw = true;
+
+        if let Err(e) = result {
+            self.status_message = Some((format!("Failed to launch lazygit: {e}"), Instant::now()));
+        }
+    }
+
     // -----------------------------------------------------------------------
     // tmux reconciliation
     // -----------------------------------------------------------------------
@@ -935,6 +993,29 @@ impl App {
         self.cached_counts = count_sessions(&self.tree);
     }
 
+    /// Scan active sessions that lack a `claude_session_id` and attempt to
+    /// detect it from `~/.claude/projects/<project_dir>/`.
+    fn detect_claude_session_ids(&mut self) {
+        let needs_detection: Vec<(String, String)> =
+            collect_sessions_needing_detection(&self.tree);
+
+        if needs_detection.is_empty() {
+            return;
+        }
+
+        let mut found_any = false;
+        for (session_id, cwd) in &needs_detection {
+            if let Some(claude_id) = detect_claude_session_id(cwd) {
+                let _ = self.db.set_claude_session_id(session_id, &claude_id);
+                found_any = true;
+            }
+        }
+
+        if found_any {
+            self.refresh_tree();
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Tree refresh
     // -----------------------------------------------------------------------
@@ -945,6 +1026,7 @@ impl App {
             self.tree_state.invalidate_cache();
             self.cached_counts = count_sessions(&self.tree);
             self.refresh_cached_selected();
+            self.dirty = true;
         }
     }
 
@@ -980,6 +1062,64 @@ fn interactor_inner_size(term_cols: u16, term_rows: u16) -> (u16, u16) {
     let inner_cols = right_width.saturating_sub(2);
     let inner_rows = main_height.saturating_sub(2);
     (inner_cols, inner_rows)
+}
+
+/// Collect `(session_id, cwd)` pairs for active sessions that lack a Claude session ID.
+fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    for node in tree {
+        match node {
+            TreeNode::Session(s) => {
+                if s.claude_session_id.is_none()
+                    && s.cwd.is_some()
+                {
+                    result.push((
+                        s.session_id.clone(),
+                        s.cwd.as_ref().unwrap().to_string_lossy().to_string(),
+                    ));
+                }
+            }
+            TreeNode::Group(g) => {
+                result.extend(collect_sessions_needing_detection(&g.children));
+            }
+        }
+    }
+    result
+}
+
+/// Detect the Claude Code session ID for a project by scanning
+/// `~/.claude/projects/<project_dir>/` for the most recently modified `.jsonl` file.
+fn detect_claude_session_id(cwd: &str) -> Option<String> {
+    let project_dir_name = cwd.replace('/', "-").replace('.', "-");
+    let project_dir = dirs::home_dir()?
+        .join(".claude/projects")
+        .join(&project_dir_name);
+
+    let mut entries: Vec<_> = std::fs::read_dir(&project_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map_or(false, |ext| ext == "jsonl")
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        let ta = a
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let tb = b
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        tb.cmp(&ta) // newest first
+    });
+
+    entries
+        .first()
+        .and_then(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
 }
 
 fn find_session_in_tree<'a>(tree: &'a [TreeNode], session_id: &str) -> Option<&'a SessionSummary> {

@@ -7,6 +7,7 @@ pub(crate) mod config;
 pub(crate) mod db;
 #[cfg(test)]
 mod mock;
+mod path_complete;
 mod text_utils;
 mod theme;
 mod time_utils;
@@ -80,7 +81,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
 
             if tmux.is_available() {
-                tmux.launch_claude_session(&tmux_name, &cwd)?;
+                tmux.launch_claude_session(&tmux_name, &cwd, None)?;
             }
             println!("Created session '{}' ({})", name, id);
         }
@@ -94,7 +95,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 .get_session_cwd(&session_id)?
                 .ok_or_else(|| color_eyre::eyre::eyre!("Session '{}' has no cwd", session_id))?;
             let name = sanitize_tmux_name(&session_id);
-            tmux.launch_claude_session(&name, &cwd)?;
+            tmux.launch_claude_session(&name, &cwd, None)?;
             db.update_session_status(&session_id, types::SessionStatus::Active)?;
             println!("Launched session '{}'", session_id);
         }
@@ -174,7 +175,16 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
         }
         cli::Commands::Rename { session_id, name } => {
             let _lock = acquire_lock()?;
-            db.update_session_name(&session_id, &name)?;
+            let new_tmux_name = tmux::sanitize_tmux_name(&name);
+            // Rename the live tmux session if it exists
+            let tree = db.get_tree()?;
+            if let Some(session) = find_session_in_tree(&tree, &session_id) {
+                if let Some(ref old_tmux) = session.tmux_name {
+                    let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
+                    let _ = tmux.rename_session(old_tmux, &new_tmux_name);
+                }
+            }
+            db.update_session_name(&session_id, &name, &new_tmux_name)?;
             if json {
                 println!(
                     r#"{{"status":"renamed","session":"{}","name":"{}"}}"#,

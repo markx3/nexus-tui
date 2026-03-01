@@ -46,11 +46,20 @@ impl TmuxManager {
             .unwrap_or(false)
     }
 
-    /// Launch a new detached tmux session that runs `claude` immediately.
-    pub fn launch_claude_session(&self, name: &str, cwd: &str) -> Result<()> {
-        let status = Command::new("tmux")
-            .args(["-L", &self.socket_name])
-            .args(["new-session", "-d", "-s", name, "-c", cwd, "claude"])
+    /// Launch a new detached tmux session that runs `claude`.
+    ///
+    /// If `resume_id` is provided, launches `claude --resume <id>` so Claude
+    /// Code picks up the previous conversation.
+    pub fn launch_claude_session(&self, name: &str, cwd: &str, resume_id: Option<&str>) -> Result<()> {
+        let mut cmd = Command::new("tmux");
+        cmd.args(["-L", &self.socket_name])
+            .args(["new-session", "-d", "-s", name, "-c", cwd, "claude"]);
+
+        if let Some(id) = resume_id {
+            cmd.args(["--resume", id]);
+        }
+
+        let status = cmd
             .stderr(Stdio::null())
             .status()
             .wrap_err("failed to run tmux new-session")?;
@@ -122,6 +131,25 @@ impl TmuxManager {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_list_sessions_output(&stdout))
+    }
+
+    /// Rename an existing tmux session.
+    pub fn rename_session(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let status = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["rename-session", "-t", old_name, new_name])
+            .stderr(Stdio::null())
+            .status()
+            .wrap_err("failed to run tmux rename-session")?;
+
+        if !status.success() {
+            bail!(
+                "tmux rename-session exited with status {} for '{}'",
+                status,
+                old_name
+            );
+        }
+        Ok(())
     }
 
     /// Kill a session by name on the nexus socket.
@@ -655,7 +683,7 @@ session-c:win3:0:\n";
         let mgr = TmuxManager::new("nexus-test-lk");
 
         // Launch claude session
-        mgr.launch_claude_session("test-sess", "/tmp").unwrap();
+        mgr.launch_claude_session("test-sess", "/tmp", None).unwrap();
 
         // Verify it appears in list
         let sessions = mgr.list_sessions().unwrap();
@@ -681,7 +709,7 @@ session-c:win3:0:\n";
         let mgr = TmuxManager::new("nexus-test-kb");
 
         // Need at least one session for server to exist
-        mgr.launch_claude_session("kb-test", "/tmp").unwrap();
+        mgr.launch_claude_session("kb-test", "/tmp", None).unwrap();
         mgr.configure_server().unwrap();
         mgr.kill_session("kb-test").unwrap();
     }
@@ -690,7 +718,7 @@ session-c:win3:0:\n";
     #[ignore]
     fn test_capture_pane_returns_content() {
         let mgr = TmuxManager::new("nexus-test-cap");
-        mgr.launch_claude_session("cap-test", "/tmp").unwrap();
+        mgr.launch_claude_session("cap-test", "/tmp", None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         let content = mgr.capture_pane("cap-test").unwrap();
@@ -703,7 +731,7 @@ session-c:win3:0:\n";
     #[ignore]
     fn test_send_keys_reaches_session() {
         let mgr = TmuxManager::new("nexus-test-sk");
-        mgr.launch_claude_session("sk-test", "/tmp").unwrap();
+        mgr.launch_claude_session("sk-test", "/tmp", None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         mgr.send_keys("sk-test", &SendKeysArgs::Literal("hello".to_string()))
@@ -718,7 +746,7 @@ session-c:win3:0:\n";
     #[ignore]
     fn test_resize_pane() {
         let mgr = TmuxManager::new("nexus-test-rp");
-        mgr.launch_claude_session("rp-test", "/tmp").unwrap();
+        mgr.launch_claude_session("rp-test", "/tmp", None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         mgr.resize_pane("rp-test", 80, 24).unwrap();
