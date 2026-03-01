@@ -80,11 +80,31 @@ impl Database {
         Ok(db)
     }
 
-    /// Create all tables if they don't already exist.
+    /// Create all tables if they don't already exist, then migrate.
     pub fn init_schema(&self) -> Result<()> {
         self.conn
             .execute_batch(SCHEMA_SQL)
             .wrap_err("failed to initialise database schema")?;
+        self.migrate()?;
+        Ok(())
+    }
+
+    /// Add columns that may be missing from a pre-overhaul database.
+    fn migrate(&self) -> Result<()> {
+        // Each ALTER is a no-op if the column already exists (duplicate column error → skip).
+        let additions = [
+            "ALTER TABLE sessions ADD COLUMN tmux_name TEXT",
+            "ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'dead'",
+            "ALTER TABLE sessions ADD COLUMN created_by TEXT NOT NULL DEFAULT 'scanner'",
+            "ALTER TABLE sessions ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+        ];
+        for sql in &additions {
+            match self.conn.execute_batch(sql) {
+                Ok(()) => {}
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                Err(e) => return Err(e).wrap_err("migration failed"),
+            }
+        }
         Ok(())
     }
 
