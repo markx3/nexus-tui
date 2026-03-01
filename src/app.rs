@@ -7,12 +7,14 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::DefaultTerminal;
 use tachyonfx::Effect;
 
+use crate::capture_worker;
 use crate::config::NexusConfig;
 use crate::db::Database;
 use crate::theme;
 use crate::tmux::{sanitize_tmux_name, TmuxManager};
 use crate::types::*;
 use crate::ui;
+use crate::widgets::interactor_state::InteractorState;
 use crate::widgets::tree_state::{TreeAction, TreeState};
 
 const TICK_RATE: Duration = Duration::from_millis(16);
@@ -49,6 +51,8 @@ pub struct App {
     pub(crate) picker_cursor: usize,
     // Set after returning from tmux attach to force a full redraw
     needs_full_redraw: bool,
+    // Session interactor state (None if tmux unavailable)
+    pub(crate) interactor_state: Option<InteractorState>,
 }
 
 impl App {
@@ -63,6 +67,14 @@ impl App {
         let tree_state = TreeState::new(&tree);
         let selection = SelectionState::default();
         let cached_counts = count_sessions(&tree);
+
+        // Spawn capture worker if tmux is available
+        let interactor_state = if tmux_available {
+            let (session_tx, content_rx) = capture_worker::spawn(tmux.clone());
+            Some(InteractorState::new(tmux.clone(), content_rx, session_tx))
+        } else {
+            None
+        };
 
         Self {
             should_quit: false,
@@ -89,6 +101,7 @@ impl App {
             picker_groups: Vec::new(),
             picker_cursor: 0,
             needs_full_redraw: false,
+            interactor_state,
         }
     }
 
@@ -97,6 +110,11 @@ impl App {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_tick);
             self.last_tick = now;
+
+            // Poll capture worker for new content
+            if let Some(ref mut is) = self.interactor_state {
+                is.poll_content();
+            }
 
             // Poll tmux for active sessions periodically
             if self.tmux_available && now.duration_since(self.last_tmux_poll) >= TMUX_POLL_INTERVAL
@@ -210,10 +228,15 @@ impl App {
                     let id_owned = id.clone();
                     self.selection.selected = Some(target);
                     self.refresh_cached_selected();
+                    self.sync_interactor_to_selection();
                     self.try_launch_session(&id_owned);
                 } else {
                     self.selection.selected = Some(target);
                     self.refresh_cached_selected();
+                    // Group node selected — clear interactor
+                    if let Some(ref mut is) = self.interactor_state {
+                        is.clear();
+                    }
                 }
             }
             TreeAction::ToggleExpand(_) => {}
@@ -221,8 +244,20 @@ impl App {
                 if let Some(target) = self.tree_state.selected_target(&self.tree) {
                     self.selection.selected = Some(target);
                     self.refresh_cached_selected();
+                    self.sync_interactor_to_selection();
                 }
             }
+        }
+    }
+
+    /// Sync interactor state to the currently selected session.
+    fn sync_interactor_to_selection(&mut self) {
+        if let Some(ref session) = self.cached_selected {
+            if let Some(ref mut is) = self.interactor_state {
+                is.switch_session(session);
+            }
+        } else if let Some(ref mut is) = self.interactor_state {
+            is.clear();
         }
     }
 

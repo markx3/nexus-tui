@@ -574,6 +574,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrand"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -985,6 +991,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tachyonfx",
+ "tempfile",
  "toml",
  "uuid",
 ]
@@ -1684,6 +1691,19 @@ dependencies = [
  "ratatui-core",
  "thiserror 2.0.18",
  "unicode-width",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82a72c767771b47409d2345987fda8628641887d5466101319899796367354a0"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.1",
+ "once_cell",
+ "rustix",
+ "windows-sys",
 ]
 
 [[package]]

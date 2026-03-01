@@ -1,0 +1,92 @@
+use std::sync::mpsc;
+use std::time::Duration;
+
+use ansi_to_tui::IntoText;
+use ratatui::text::Text;
+
+use crate::ansi::sanitize_ansi;
+use crate::tmux::TmuxManager;
+
+/// Spawn the capture worker thread.
+///
+/// Returns channels for communicating with the worker:
+/// - `session_tx`: send session names to capture (empty string = stop)
+/// - `content_rx`: receive parsed `Text<'static>` (None = session gone)
+pub fn spawn(
+    tmux: TmuxManager,
+) -> (mpsc::Sender<String>, mpsc::Receiver<Option<Text<'static>>>) {
+    let (session_tx, session_rx) = mpsc::channel::<String>();
+    let (content_tx, content_rx) = mpsc::channel::<Option<Text<'static>>>();
+
+    std::thread::Builder::new()
+        .name("nexus-capture".to_string())
+        .spawn(move || {
+            capture_loop(tmux, session_rx, content_tx);
+        })
+        .expect("failed to spawn capture worker thread");
+
+    (session_tx, content_rx)
+}
+
+fn capture_loop(
+    tmux: TmuxManager,
+    session_rx: mpsc::Receiver<String>,
+    content_tx: mpsc::Sender<Option<Text<'static>>>,
+) {
+    let mut current_session = String::new();
+    let mut last_raw: Vec<u8> = Vec::new();
+    let mut poll_interval = Duration::from_millis(30);
+
+    loop {
+        // Check for session change (non-blocking)
+        if let Ok(new_session) = session_rx.try_recv() {
+            current_session = new_session;
+            last_raw.clear(); // force re-parse on session switch
+            poll_interval = Duration::from_millis(30);
+        }
+
+        if current_session.is_empty() {
+            // Block until a session is selected — no CPU burn
+            match session_rx.recv() {
+                Ok(new_session) => {
+                    current_session = new_session;
+                    last_raw.clear();
+                    poll_interval = Duration::from_millis(30);
+                }
+                Err(_) => return, // Channel closed — main thread exiting
+            }
+            continue;
+        }
+
+        // Capture
+        match tmux.capture_pane(&current_session) {
+            Ok(raw) => {
+                let raw_bytes = raw.as_bytes();
+                if raw_bytes != last_raw.as_slice() {
+                    last_raw = raw_bytes.to_vec();
+                    // Parse ANSI on the worker thread — main thread receives ready-to-render Text
+                    let sanitized = sanitize_ansi(raw_bytes);
+                    let parsed: Text<'static> = sanitized.into_text().unwrap_or_default();
+                    if content_tx.send(Some(parsed)).is_err() {
+                        return; // Main thread dropped receiver
+                    }
+                    poll_interval = Duration::from_millis(30); // active: fast polling
+                } else {
+                    // Content unchanged — back off
+                    poll_interval = (poll_interval * 2).min(Duration::from_millis(500));
+                }
+            }
+            Err(_) => {
+                // Session gone — notify main thread
+                if content_tx.send(None).is_err() {
+                    return;
+                }
+                // Stop capturing this session — wait for a new one
+                current_session.clear();
+                continue;
+            }
+        }
+
+        std::thread::sleep(poll_interval);
+    }
+}

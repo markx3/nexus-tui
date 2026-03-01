@@ -1,6 +1,8 @@
 mod ansi;
 mod app;
+mod capture_worker;
 mod cli;
+mod conversation;
 pub(crate) mod config;
 pub(crate) mod db;
 #[cfg(test)]

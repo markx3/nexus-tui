@@ -62,20 +62,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         true, // tree is always "focused" now (no focus switching)
     );
 
-    // Placeholder for interactor panel (Phase 2 adds the real widget)
-    let interactor_block = Block::default()
-        .title(Span::styled(
-            " SESSION ",
-            theme::style_for(ThemeElement::InteractorTitle),
-        ))
-        .borders(Borders::ALL)
-        .border_set(theme::border_for(PanelType::SessionInteractor))
-        .border_style(theme::border_style_for(PanelType::SessionInteractor, false))
-        .style(theme::style_for(ThemeElement::Surface));
-    let interactor_msg = Paragraph::new("Select a session")
-        .style(theme::style_for(ThemeElement::Dim))
-        .block(interactor_block);
-    frame.render_widget(interactor_msg, interactor_area);
+    // Render the session interactor
+    let interactor_content = app.interactor_state.as_ref().and_then(|is| is.current_content.as_ref());
+    let interactor_session_name = app
+        .interactor_state
+        .as_ref()
+        .and_then(|is| is.current_session_name.as_deref());
+    let log_scroll = app
+        .interactor_state
+        .as_ref()
+        .map(|is| is.log_scroll_offset)
+        .unwrap_or(0);
+    widgets::interactor::render_interactor(
+        frame,
+        interactor_area,
+        interactor_content,
+        interactor_session_name,
+        false,
+        log_scroll,
+    );
 
     let selected_session = app.selected_session();
     widgets::detail::render_detail(frame, detail_area, selected_session, false);

@@ -6,6 +6,9 @@ use ratatui::Frame;
 use crate::theme;
 use crate::types::{PanelType, SessionSummary, ThemeElement};
 
+/// Render the compact detail panel (~1/6 height of right column).
+///
+/// Shows: name, cwd, status, tmux name — one or two lines.
 pub fn render_detail(
     frame: &mut Frame,
     area: Rect,
@@ -32,11 +35,10 @@ pub fn render_detail(
 
     let label_style = theme::style_for(ThemeElement::DetailLabel);
     let value_style = theme::style_for(ThemeElement::DetailValue);
-
-    let id_short = if session.session_id.len() > 8 {
-        &session.session_id[session.session_id.len() - 8..]
-    } else {
-        &session.session_id
+    let status_style = match session.status {
+        crate::types::SessionStatus::Active => theme::style_for(ThemeElement::AcidGreen),
+        crate::types::SessionStatus::Detached => theme::style_for(ThemeElement::Hazard),
+        crate::types::SessionStatus::Dead => theme::style_for(ThemeElement::Dim),
     };
 
     let cwd_display = session
@@ -44,54 +46,26 @@ pub fn render_detail(
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "-".to_string());
-
-    let status_display = session.status.as_str();
-    let origin_display = session.created_by.as_str();
     let tmux_display = session.tmux_name.as_deref().unwrap_or("-");
 
-    let mut lines: Vec<Line> = vec![
-        detail_line("Session ID", id_short, label_style, value_style),
-        detail_line("Name", &session.display_name, label_style, value_style),
-        detail_line("CWD", &cwd_display, label_style, value_style),
-        detail_line("Status", status_display, label_style, value_style),
-        detail_line("Origin", origin_display, label_style, value_style),
-        detail_line("Tmux", tmux_display, label_style, value_style),
-        detail_line("Last active", &session.last_active, label_style, value_style),
-        detail_line("Created", &session.created_at, label_style, value_style),
+    let lines: Vec<Line> = vec![
+        // Line 1: Name + Status
+        Line::from(vec![
+            Span::styled(&session.display_name, value_style),
+            Span::styled("  ", label_style),
+            Span::styled(session.status.as_str(), status_style),
+        ]),
+        // Line 2: CWD + Tmux name
+        Line::from(vec![
+            Span::styled("cwd: ", label_style),
+            Span::styled(cwd_display, value_style),
+            Span::styled("  tmux: ", label_style),
+            Span::styled(tmux_display.to_string(), value_style),
+        ]),
     ];
-
-    // Blank line before action bar
-    lines.push(Line::from(""));
-
-    // Action bar
-    let action_key_style = theme::style_for(ThemeElement::NeonCyan);
-    let action_label_style = theme::style_for(ThemeElement::Dim);
-
-    lines.push(Line::from(vec![
-        Span::styled("[Enter]", action_key_style),
-        Span::styled(" Resume  ", action_label_style),
-        Span::styled("[d]", action_key_style),
-        Span::styled(" Delete  ", action_label_style),
-        Span::styled("[m]", action_key_style),
-        Span::styled(" Move  ", action_label_style),
-        Span::styled("[r]", action_key_style),
-        Span::styled(" Rename", action_label_style),
-    ]));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
-}
-
-fn detail_line(
-    label: &str,
-    value: &str,
-    label_style: ratatui::style::Style,
-    value_style: ratatui::style::Style,
-) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}: "), label_style),
-        Span::styled(value.to_owned(), value_style),
-    ])
 }
 
 #[cfg(test)]
@@ -123,6 +97,20 @@ mod tests {
             .draw(|frame| {
                 let area = frame.area();
                 render_detail(frame, area, session.as_ref(), true);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn render_detail_compact_in_small_area() {
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let tree = mock::mock_tree();
+        let session = find_first_session(&tree);
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_detail(frame, area, session.as_ref(), false);
             })
             .unwrap();
     }
