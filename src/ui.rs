@@ -43,23 +43,27 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     ])
     .areas(main_area);
 
-    // Right column: interactor (fill) + detail (fixed, matches logo panel height)
-    let [interactor_area, detail_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(9),
-    ])
-    .areas(right_column);
+    // Right column: interactor fills everything
+    let interactor_area = right_column;
 
-    // Split left panel: tree + optional logo
-    let (tree_area, logo_area) = if left_panel.height >= 20 {
+    // Split left panel: tree + detail + optional logo
+    let (tree_area, detail_area, logo_area) = if left_panel.height >= 30 {
+        let [tree, detail, logo] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(5),
+            Constraint::Length(9),
+        ])
+        .areas(left_panel);
+        (tree, Some(detail), Some(logo))
+    } else if left_panel.height >= 20 {
         let [tree, logo] = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(9),
         ])
         .areas(left_panel);
-        (tree, Some(logo))
+        (tree, None, Some(logo))
     } else {
-        (left_panel, None)
+        (left_panel, None, None)
     };
 
     // Render each zone
@@ -98,8 +102,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         log_scroll,
     );
 
-    let selected_session = app.selected_session();
-    widgets::detail::render_detail(frame, detail_area, selected_session, false);
+    if let Some(detail_area) = detail_area {
+        let selected_session = app.selected_session();
+        widgets::detail::render_detail(frame, detail_area, selected_session, false);
+    }
 
     // Input prompt overlay (renders at bottom of tree area, above logo)
     match app.input_mode {
