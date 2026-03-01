@@ -3,6 +3,13 @@ name = "nexus"
 version = "0.1.0"
 edition = "2021"
 description = "Cyberpunk TUI session manager for Claude Code"
+license = "MIT"
+authors = ["Marcos Felipe Eipper"]
+repository = "https://github.com/markx3/nexus-tui"
+homepage = "https://github.com/markx3/nexus-tui"
+keywords = ["tui", "tmux", "claude", "session-manager", "ratatui"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [dependencies]
 ratatui = "0.30"
@@ -18,6 +25,7 @@ toml = "0.8"
 rusqlite = { version = "0.34", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 ansi-to-tui = "8"
+rand = "0.9"
 
 [dev-dependencies]
 tempfile = "3"

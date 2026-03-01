@@ -1,3 +1,4 @@
+use rand::Rng;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -11,26 +12,36 @@ use crate::types::*;
 // Game of Life engine
 // ---------------------------------------------------------------------------
 
-/// Animation loops every CYCLE_LEN frames, then re-seeds (used in tests).
-#[cfg(test)]
+/// Animation loops every CYCLE_LEN frames, then re-seeds.
 const CYCLE_LEN: usize = 128;
 
-/// Initial live cells as (dx, dy) offsets from center.
-/// A mix of clusters that produce interesting oscillators and gliders
-/// on a small toroidal grid.
+/// Initial live cells as (dx, dy) offsets from center (deterministic, for tests).
+#[cfg(test)]
 const SEED_OFFSETS: &[(isize, isize)] = &[
     // R-pentomino (chaotic, long-lived)
-    (0, -1), (1, -1),
-    (-1, 0), (0, 0),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (0, 0),
     (0, 1),
     // Blinker top-left
-    (-5, -2), (-5, -1), (-5, 0),
+    (-5, -2),
+    (-5, -1),
+    (-5, 0),
     // Block bottom-right (stable, acts as obstacle)
-    (4, 1), (5, 1), (4, 2), (5, 2),
+    (4, 1),
+    (5, 1),
+    (4, 2),
+    (5, 2),
     // Glider seed bottom-left
-    (-4, 2), (-3, 3), (-5, 3), (-4, 3), (-3, 2),
+    (-4, 2),
+    (-3, 3),
+    (-5, 3),
+    (-4, 3),
+    (-3, 2),
 ];
 
+#[cfg(test)]
 fn gol_seed(width: usize, height: usize) -> Vec<Vec<bool>> {
     let mut grid = vec![vec![false; width]; height];
     let cx = width as isize / 2;
@@ -42,6 +53,13 @@ fn gol_seed(width: usize, height: usize) -> Vec<Vec<bool>> {
         grid[y][x] = true;
     }
     grid
+}
+
+fn random_seed(width: usize, height: usize) -> Vec<Vec<bool>> {
+    let mut rng = rand::rng();
+    (0..height)
+        .map(|_| (0..width).map(|_| rng.random_bool(0.35)).collect())
+        .collect()
 }
 
 fn count_neighbors(grid: &[Vec<bool>], x: usize, y: usize) -> u8 {
@@ -91,44 +109,69 @@ fn symbol_for(x: usize, y: usize) -> char {
 
 pub struct LogoState {
     grid: Vec<Vec<bool>>,
+    prev_grid: Vec<Vec<bool>>,
     width: usize,
     height: usize,
+    frame_count: usize,
 }
 
 impl LogoState {
     pub fn new() -> Self {
         Self {
             grid: Vec::new(),
+            prev_grid: Vec::new(),
             width: 0,
             height: 0,
+            frame_count: 0,
         }
     }
 
     /// Advance the GoL simulation by one step.
     ///
-    /// If the panel size changed (or first call), re-seed. Otherwise evolve
-    /// one generation. Automatically re-seeds after CYCLE_LEN frames.
+    /// Re-seeds on: size change, cycle limit, stagnation (grid == prev), or all dead.
     pub fn advance(&mut self, width: usize, height: usize) {
         if width != self.width || height != self.height || width < 5 || height < 3 {
-            // Size changed or too small — reseed
             self.width = width;
             self.height = height;
             if width >= 5 && height >= 3 {
-                self.grid = gol_seed(width, height);
+                self.grid = random_seed(width, height);
+                self.prev_grid = Vec::new();
             } else {
                 self.grid = Vec::new();
+                self.prev_grid = Vec::new();
             }
+            self.frame_count = 0;
             return;
         }
 
-        // Check if grid is all dead (stagnated) — reseed
+        // Forced reseed after CYCLE_LEN frames
+        if self.frame_count >= CYCLE_LEN {
+            self.grid = random_seed(width, height);
+            self.prev_grid = Vec::new();
+            self.frame_count = 0;
+            return;
+        }
+
+        // Stagnation: grid unchanged from previous step (stable pattern)
+        if self.grid == self.prev_grid {
+            self.grid = random_seed(width, height);
+            self.prev_grid = Vec::new();
+            self.frame_count = 0;
+            return;
+        }
+
+        // All dead
         let any_alive = self.grid.iter().any(|row| row.iter().any(|&c| c));
         if !any_alive {
-            self.grid = gol_seed(width, height);
+            self.grid = random_seed(width, height);
+            self.prev_grid = Vec::new();
+            self.frame_count = 0;
             return;
         }
 
+        self.prev_grid = self.grid.clone();
         self.grid = gol_step(&self.grid);
+        self.frame_count += 1;
     }
 }
 
@@ -466,5 +509,21 @@ mod tests {
         assert_eq!(state.width, 30);
         assert_eq!(state.height, 12);
         assert_ne!(grid1.len(), state.grid.len());
+    }
+
+    #[test]
+    fn logo_state_reseeds_after_cycle_len() {
+        let mut state = LogoState::new();
+        // First advance seeds, then CYCLE_LEN more advances should trigger reseed
+        for _ in 0..=CYCLE_LEN {
+            state.advance(20, 9);
+        }
+        let grid_before = state.grid.clone();
+        // Next advance hits frame_count >= CYCLE_LEN (or stagnation), must reseed
+        state.advance(20, 9);
+        // After reseed, frame_count resets to 0
+        assert_eq!(state.frame_count, 0);
+        // Grid should differ (random reseed vs settled state — vanishingly unlikely to match)
+        assert_ne!(grid_before, state.grid, "Grid should change after forced reseed");
     }
 }
