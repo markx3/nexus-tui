@@ -1,4 +1,3 @@
-pub mod detail;
 pub mod interactor;
 pub mod interactor_state;
 pub mod logo;

@@ -214,8 +214,6 @@ pub enum ThemeElement {
     TreeIndent,
     TopBarLabel,
     TopBarValue,
-    DetailLabel,
-    DetailValue,
     InteractorTitle,
     ConversationHuman,
     ConversationAssistant,
@@ -228,6 +226,5 @@ pub enum PanelType {
     TopBar,
     SessionTree,
     SessionInteractor,
-    Detail,
     Logo,
 }

@@ -47,8 +47,6 @@ pub fn style_for(element: ThemeElement) -> Style {
         ThemeElement::TreeIndent => Style::new().fg(BORDER),
         ThemeElement::TopBarLabel => Style::new().fg(DIM),
         ThemeElement::TopBarValue => Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
-        ThemeElement::DetailLabel => Style::new().fg(DIM),
-        ThemeElement::DetailValue => Style::new().fg(TEXT),
         ThemeElement::InteractorTitle => Style::new().fg(NEON_CYAN).add_modifier(Modifier::BOLD),
         ThemeElement::ConversationHuman => Style::new().fg(NEON_CYAN),
         ThemeElement::ConversationAssistant => Style::new().fg(ACID_GREEN),
@@ -65,7 +63,6 @@ pub fn border_for(panel: PanelType) -> BorderSet<'static> {
         PanelType::TopBar => ratatui::symbols::border::DOUBLE,
         PanelType::SessionTree => ratatui::symbols::border::PLAIN,
         PanelType::SessionInteractor => ratatui::symbols::border::PLAIN,
-        PanelType::Detail => ratatui::symbols::border::PLAIN,
         PanelType::Logo => ratatui::symbols::border::PLAIN,
     }
 }
@@ -119,8 +116,6 @@ mod tests {
             ThemeElement::TreeIndent,
             ThemeElement::TopBarLabel,
             ThemeElement::TopBarValue,
-            ThemeElement::DetailLabel,
-            ThemeElement::DetailValue,
             ThemeElement::InteractorTitle,
             ThemeElement::ConversationHuman,
             ThemeElement::ConversationAssistant,
@@ -144,7 +139,6 @@ mod tests {
             PanelType::TopBar,
             PanelType::SessionTree,
             PanelType::SessionInteractor,
-            PanelType::Detail,
             PanelType::Logo,
         ];
 
@@ -159,13 +153,13 @@ mod tests {
 
     #[test]
     fn border_style_focused_uses_neon_cyan() {
-        let style = border_style_for(PanelType::Detail, true);
+        let style = border_style_for(PanelType::SessionTree, true);
         assert_eq!(style, style_for(ThemeElement::FocusedBorder));
     }
 
     #[test]
     fn border_style_unfocused_uses_border_color() {
-        let style = border_style_for(PanelType::Detail, false);
+        let style = border_style_for(PanelType::SessionTree, false);
         assert_eq!(style, style_for(ThemeElement::UnfocusedBorder));
     }
 
