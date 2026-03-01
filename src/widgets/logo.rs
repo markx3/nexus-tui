@@ -39,8 +39,69 @@ const AGENTS: &[Agent] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Explosion symbols: ✦ (impact) → ✧ (fading) → debris scattered around
+// ---------------------------------------------------------------------------
+
+const EXPLOSION_IMPACT: char = '✦';
+const EXPLOSION_FADE: char = '✧';
+const DEBRIS: char = '∗';
+
+// Debris offsets around a collision point (dx, dy)
+const DEBRIS_OFFSETS: &[(isize, isize)] = &[
+    (-1, -1), (0, -1), (1, -1),
+    (-2,  0),          (2,  0),
+    (-1,  1), (0,  1), (1,  1),
+];
+
+// ---------------------------------------------------------------------------
 // Procedural frame generation
 // ---------------------------------------------------------------------------
+
+/// Compute agent grid positions for a given frame.
+fn agent_positions(width: usize, height: usize, frame_index: usize) -> Vec<(usize, usize)> {
+    let cx = width as f64 / 2.0;
+    let cy = height as f64 / 2.0;
+    let scale_x = (width as f64 / 2.0) - 1.0;
+    let scale_y = (height as f64 / 2.0) - 0.5;
+    let t = frame_index as f64;
+
+    AGENTS
+        .iter()
+        .filter_map(|agent| {
+            let angle = agent.base_angle + t * agent.speed;
+            let x = cx + agent.radius * scale_x * angle.cos();
+            let y = cy + agent.radius * scale_y * angle.sin();
+            let xi = x.round() as isize;
+            let yi = y.round() as isize;
+            if xi >= 0 && yi >= 0 && (xi as usize) < width && (yi as usize) < height {
+                Some((xi as usize, yi as usize))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Find cells where 2+ agents overlap.
+fn find_collisions(positions: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut collisions = Vec::new();
+    for (i, &a) in positions.iter().enumerate() {
+        for &b in &positions[i + 1..] {
+            if a == b && !collisions.contains(&a) {
+                collisions.push(a);
+            }
+        }
+    }
+    collisions
+}
+
+fn is_crosshair(x: usize, y: usize, cxi: usize, cyi: usize) -> bool {
+    (x == cxi && y == cyi)                                         // center ◉
+        || (y == cyi && x >= cxi.saturating_sub(2) && x <= cxi + 2) // horizontal arm
+        || (x == cxi && y >= cyi.saturating_sub(1) && y <= cyi + 1) // vertical arm
+        || (y == cyi.wrapping_sub(1) && (x == cxi.wrapping_sub(1) || x == cxi + 1))
+        || (y == cyi + 1 && (x == cxi.wrapping_sub(1) || x == cxi + 1))
+}
 
 fn generate_frame(width: usize, height: usize, frame_index: usize) -> Vec<Vec<char>> {
     let mut grid = vec![vec![' '; width]; height];
@@ -51,57 +112,98 @@ fn generate_frame(width: usize, height: usize, frame_index: usize) -> Vec<Vec<ch
 
     let cx = width as f64 / 2.0;
     let cy = height as f64 / 2.0;
-
-    // Place crosshair at center
     let cxi = cx as usize;
     let cyi = cy as usize;
 
+    // Place crosshair at center
     if cyi < height && cxi < width {
         grid[cyi][cxi] = '◉';
     }
-    // Horizontal arms
-    if cyi < height {
-        if cxi >= 2 && cxi + 2 < width {
-            grid[cyi][cxi - 2] = '─';
-            grid[cyi][cxi - 1] = '─';
-            grid[cyi][cxi + 1] = '─';
-            grid[cyi][cxi + 2] = '─';
-        }
+    if cyi < height && cxi >= 2 && cxi + 2 < width {
+        grid[cyi][cxi - 2] = '─';
+        grid[cyi][cxi - 1] = '─';
+        grid[cyi][cxi + 1] = '─';
+        grid[cyi][cxi + 2] = '─';
     }
-    // Vertical arms + crosshair junction
-    if cxi < width {
-        if cyi >= 1 && cyi + 1 < height {
-            grid[cyi - 1][cxi] = '┼';
-            grid[cyi + 1][cxi] = '┼';
-        }
-        // Extended vertical
-        if cxi >= 1 && cxi + 1 < width && cyi >= 1 && cyi + 1 < height {
-            grid[cyi - 1][cxi - 1] = '─';
-            grid[cyi - 1][cxi + 1] = '─';
-            grid[cyi + 1][cxi - 1] = '─';
-            grid[cyi + 1][cxi + 1] = '─';
-        }
+    if cxi < width && cyi >= 1 && cyi + 1 < height {
+        grid[cyi - 1][cxi] = '┼';
+        grid[cyi + 1][cxi] = '┼';
+    }
+    if cxi >= 1 && cxi + 1 < width && cyi >= 1 && cyi + 1 < height {
+        grid[cyi - 1][cxi - 1] = '─';
+        grid[cyi - 1][cxi + 1] = '─';
+        grid[cyi + 1][cxi - 1] = '─';
+        grid[cyi + 1][cxi + 1] = '─';
     }
 
-    // Place agents
-    let scale_x = (width as f64 / 2.0) - 1.0;
-    let scale_y = (height as f64 / 2.0) - 0.5;
-    let t = frame_index as f64;
+    // Compute current agent positions and collisions
+    let positions = agent_positions(width, height, frame_index);
+    let current_collisions = find_collisions(&positions);
 
-    for agent in AGENTS {
-        let angle = agent.base_angle + t * agent.speed;
-        let x = cx + agent.radius * scale_x * angle.cos();
-        let y = cy + agent.radius * scale_y * angle.sin();
+    // Check recent frames for fading explosions (look back 1-3 frames)
+    let past_collisions: Vec<(usize, usize, usize)> = (1..=3_usize)
+        .filter(|&age| frame_index >= age)
+        .flat_map(|age| {
+            let past_pos = agent_positions(width, height, frame_index - age);
+            find_collisions(&past_pos)
+                .into_iter()
+                .map(move |(x, y)| (x, y, age))
+        })
+        .collect();
 
-        let xi = x.round() as isize;
-        let yi = y.round() as isize;
-
-        if xi >= 0 && yi >= 0 {
-            let xi = xi as usize;
-            let yi = yi as usize;
-            if xi < width && yi < height && grid[yi][xi] == ' ' {
-                grid[yi][xi] = agent.symbol;
+    // Place fading debris from past collisions (oldest first so newer overwrites)
+    for &(col_x, col_y, age) in past_collisions.iter().rev() {
+        match age {
+            1 => {
+                // Fading explosion at collision point
+                if !is_crosshair(col_x, col_y, cxi, cyi) {
+                    grid[col_y][col_x] = EXPLOSION_FADE;
+                }
+                // Scatter debris around
+                for &(dx, dy) in DEBRIS_OFFSETS {
+                    let nx = col_x as isize + dx;
+                    let ny = col_y as isize + dy;
+                    if nx >= 0 && ny >= 0 {
+                        let (nx, ny) = (nx as usize, ny as usize);
+                        if nx < width && ny < height && grid[ny][nx] == ' ' {
+                            grid[ny][nx] = DEBRIS;
+                        }
+                    }
+                }
             }
+            2 => {
+                // Sparse fading debris
+                for (i, &(dx, dy)) in DEBRIS_OFFSETS.iter().enumerate() {
+                    if i % 2 != 0 { continue; }
+                    let nx = col_x as isize + dx;
+                    let ny = col_y as isize + dy;
+                    if nx >= 0 && ny >= 0 {
+                        let (nx, ny) = (nx as usize, ny as usize);
+                        if nx < width && ny < height && grid[ny][nx] == ' ' {
+                            grid[ny][nx] = '·';
+                        }
+                    }
+                }
+            }
+            _ => {} // age 3: fully faded
+        }
+    }
+
+    // Place current collision impacts
+    for &(col_x, col_y) in &current_collisions {
+        if !is_crosshair(col_x, col_y, cxi, cyi) {
+            grid[col_y][col_x] = EXPLOSION_IMPACT;
+        }
+    }
+
+    // Place non-colliding agents
+    let collision_set: Vec<(usize, usize)> = current_collisions.clone();
+    for (i, &(x, y)) in positions.iter().enumerate() {
+        if collision_set.contains(&(x, y)) {
+            continue;
+        }
+        if grid[y][x] == ' ' {
+            grid[y][x] = AGENTS[i % AGENTS.len()].symbol;
         }
     }
 
@@ -145,6 +247,8 @@ pub fn render_logo(frame: &mut Frame, area: Rect, frame_index: usize) {
                 .iter()
                 .map(|&ch| match ch {
                     '◉' => Span::styled(ch.to_string(), nexus_style),
+                    '✦' => Span::styled(ch.to_string(), nexus_style),
+                    '✧' | '∗' => Span::styled(ch.to_string(), agent_style),
                     '∙' | '◆' | '·' | '─' | '│' | '┼' => {
                         Span::styled(ch.to_string(), agent_style)
                     }
@@ -268,6 +372,31 @@ mod tests {
         let grid5 = generate_frame(20, 9, 5);
         // Frames should differ (agents move)
         assert_ne!(grid0, grid5);
+    }
+
+    #[test]
+    fn find_collisions_detects_overlap() {
+        let positions = vec![(5, 3), (8, 2), (5, 3), (1, 1)];
+        let collisions = find_collisions(&positions);
+        assert_eq!(collisions, vec![(5, 3)]);
+    }
+
+    #[test]
+    fn explosion_chars_appear_on_collision() {
+        // Brute-force: scan many frames for a collision
+        let (w, h) = (20, 9);
+        let mut found_impact = false;
+        for fi in 0..200 {
+            let grid = generate_frame(w, h, fi);
+            for row in &grid {
+                if row.contains(&EXPLOSION_IMPACT) {
+                    found_impact = true;
+                    break;
+                }
+            }
+            if found_impact { break; }
+        }
+        assert!(found_impact, "Expected at least one collision impact in 200 frames");
     }
 
     #[test]
