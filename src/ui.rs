@@ -263,24 +263,30 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let bindings: Vec<(&str, &str)> = vec![
-        ("q / Q / Ctrl+C", "Quit Nexus"),
-        ("?", "Toggle this help"),
-        ("j / Down", "Cursor down"),
-        ("k / Up", "Cursor up"),
-        ("Enter (group)", "Toggle expand/collapse"),
-        ("Enter (session)", "Attach or resume session"),
-        ("n", "New session"),
-        ("G", "New group"),
-        ("r", "Rename selected item"),
-        ("m", "Move session to group"),
-        ("d", "Delete selected item"),
-        ("x", "Kill tmux (mark detached)"),
-        ("h", "Toggle past/dead sessions"),
-        ("Esc", "Cancel current action"),
+        ("", "-- Nexus Commands (Alt+key) --"),
+        ("Alt+q", "Quit Nexus"),
+        ("Alt+h / Alt+?", "Toggle this help"),
+        ("Alt+j", "Cursor down"),
+        ("Alt+k", "Cursor up"),
+        ("Alt+Enter", "Toggle expand/collapse"),
+        ("Alt+n", "New session"),
+        ("Alt+g", "New group"),
+        ("Alt+r", "Rename selected item"),
+        ("Alt+m", "Move session to group"),
+        ("Alt+d", "Delete selected item"),
+        ("Alt+x", "Kill tmux (mark detached)"),
+        ("Alt+H", "Toggle past/dead sessions"),
+        ("Alt+f", "Fullscreen attach to session"),
+        ("", ""),
+        ("", "All other keys are forwarded to"),
+        ("", "the embedded Claude Code session."),
+        ("", ""),
+        ("", "macOS: Enable 'Use Option as Meta"),
+        ("", "key' in Terminal/iTerm2 settings."),
     ];
 
-    let content_height = (bindings.len() as u16) + 4; // +4 for borders + title + padding
-    let content_width = 50u16;
+    let content_height = (bindings.len() as u16) + 4;
+    let content_width = 52u16;
 
     let overlay = centered_rect(content_width, content_height, area);
 
@@ -300,13 +306,20 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let lines: Vec<Line> = bindings
         .iter()
         .map(|(key, desc)| {
-            Line::from(vec![
-                Span::styled(
-                    format!("{key:>18}"),
-                    Style::new().fg(theme::NEON_CYAN),
-                ),
-                Span::styled(format!("  {desc}"), Style::new().fg(theme::TEXT)),
-            ])
+            if key.is_empty() {
+                Line::from(Span::styled(
+                    format!("  {desc}"),
+                    Style::new().fg(theme::DIM),
+                ))
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{key:>18}"),
+                        Style::new().fg(theme::NEON_CYAN),
+                    ),
+                    Span::styled(format!("  {desc}"), Style::new().fg(theme::TEXT)),
+                ])
+            }
         })
         .collect();
 

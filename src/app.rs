@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{EnableBracketedPaste, DisableBracketedPaste};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::DefaultTerminal;
 use tachyonfx::Effect;
@@ -106,6 +107,16 @@ impl App {
     }
 
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        // Enable bracketed paste so crossterm emits Event::Paste
+        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+
+        let result = self.event_loop(&mut terminal);
+
+        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+        result
+    }
+
+    fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.should_quit {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_tick);
@@ -135,7 +146,7 @@ impl App {
                 terminal.clear()?;
                 self.needs_full_redraw = false;
             }
-            terminal.draw(|frame| ui::draw(frame, &mut self, elapsed))?;
+            terminal.draw(|frame| ui::draw(frame, self, elapsed))?;
 
             let poll_timeout = if self.boot_done {
                 TICK_RATE
@@ -144,75 +155,160 @@ impl App {
             };
 
             if event::poll(poll_timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key);
-                    }
-                }
+                let ev = event::read()?;
+                self.handle_event(ev);
             }
         }
 
         Ok(())
     }
 
-    fn handle_key(&mut self, key: KeyEvent) {
-        match self.input_mode {
-            InputMode::Normal => self.handle_normal_key(key),
-            InputMode::TextInput => self.handle_text_input_key(key),
-            InputMode::Confirm => self.handle_confirm_key(key),
-            InputMode::GroupPicker => self.handle_group_picker_key(key),
-        }
-    }
-
-    fn handle_normal_key(&mut self, key: KeyEvent) {
-        // Help overlay intercepts everything except ? and Esc
-        if self.show_help {
-            match key.code {
-                KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
-                _ => self.show_help = false,
+    fn handle_event(&mut self, event: Event) {
+        // Modal overlays intercept key events directly (not forwarded to tmux)
+        if self.input_mode != InputMode::Normal {
+            if let Event::Key(key) = event {
+                if key.kind == KeyEventKind::Press {
+                    match self.input_mode {
+                        InputMode::TextInput => self.handle_text_input_key(key),
+                        InputMode::Confirm => self.handle_confirm_key(key),
+                        InputMode::GroupPicker => self.handle_group_picker_key(key),
+                        InputMode::Normal => unreachable!(),
+                    }
+                }
             }
             return;
         }
 
-        // Global keys first
+        // Help overlay — any key dismisses
+        if self.show_help {
+            if let Event::Key(key) = event {
+                if key.kind == KeyEventKind::Press {
+                    self.show_help = false;
+                }
+            }
+            return;
+        }
+
+        // Resize events — update interactor pane geometry
+        if let Event::Resize(cols, rows) = event {
+            if let Some(ref mut is) = self.interactor_state {
+                // Subtract approximate borders for interactor inner area
+                let interactor_cols = (cols * 75 / 100).saturating_sub(2);
+                let interactor_rows = (rows * 83 / 100).saturating_sub(5);
+                is.resize_if_needed(interactor_cols, interactor_rows);
+            }
+            return;
+        }
+
+        // Get the current tmux name for forwarding
+        let current_tmux_name = self.cached_selected.as_ref()
+            .filter(|s| s.status == SessionStatus::Active)
+            .and_then(|s| s.tmux_name.clone());
+
+        // Delegate to interactor's route_event
+        if let Some(ref mut is) = self.interactor_state {
+            let result = is.route_event(&event, current_tmux_name.as_deref());
+            match result {
+                RouteResult::Forwarded => return,
+                RouteResult::NexusCommand(cmd) => {
+                    self.dispatch_nexus_command(cmd);
+                    return;
+                }
+                RouteResult::Ignored => {}
+            }
+        }
+
+        // Fallback for when interactor_state is None (tmux unavailable):
+        // handle keys directly for tree navigation and CRUD
+        if let Event::Key(key) = event {
+            if key.kind == KeyEventKind::Press {
+                self.handle_fallback_key(key);
+            }
+        }
+    }
+
+    fn dispatch_nexus_command(&mut self, cmd: NexusCommand) {
+        match cmd {
+            NexusCommand::CursorDown => {
+                if let Some(action) = self.tree_state.handle_key(
+                    KeyEvent::new(KeyCode::Down, crossterm::event::KeyModifiers::NONE),
+                    &self.tree,
+                ) {
+                    self.handle_tree_action(action);
+                }
+            }
+            NexusCommand::CursorUp => {
+                if let Some(action) = self.tree_state.handle_key(
+                    KeyEvent::new(KeyCode::Up, crossterm::event::KeyModifiers::NONE),
+                    &self.tree,
+                ) {
+                    self.handle_tree_action(action);
+                }
+            }
+            NexusCommand::ToggleExpand => {
+                if let Some(action) = self.tree_state.handle_key(
+                    KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+                    &self.tree,
+                ) {
+                    self.handle_tree_action(action);
+                }
+            }
+            NexusCommand::NewSession => self.start_new_session(),
+            NexusCommand::DeleteSelected => self.start_delete(),
+            NexusCommand::RenameSelected => self.start_rename(),
+            NexusCommand::MoveSession => self.start_move_session(),
+            NexusCommand::NewGroup => self.start_new_group(),
+            NexusCommand::KillTmux => self.kill_tmux_session(),
+            NexusCommand::FullscreenAttach => self.fullscreen_attach(),
+            NexusCommand::ToggleHelp => {
+                self.show_help = !self.show_help;
+            }
+            NexusCommand::Quit => {
+                self.should_quit = true;
+            }
+            NexusCommand::ToggleDeadSessions => {
+                self.show_dead_sessions = !self.show_dead_sessions;
+                self.refresh_tree();
+            }
+        }
+    }
+
+    /// Fullscreen attach: suspend nexus TUI and attach to the selected tmux session.
+    fn fullscreen_attach(&mut self) {
+        let tmux_name = match self.cached_selected.as_ref() {
+            Some(s) if s.status == SessionStatus::Active => s.tmux_name.clone(),
+            _ => {
+                self.status_message = Some((
+                    "No active session to attach".to_string(),
+                    Instant::now(),
+                ));
+                return;
+            }
+        };
+        if let Some(name) = tmux_name {
+            self.attach_tmux_session(&name);
+        }
+    }
+
+    /// Fallback key handler when interactor_state is None (tmux unavailable).
+    fn handle_fallback_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => {
                 self.should_quit = true;
-                return;
-            }
-            KeyCode::Char('c')
-                if key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
-            {
-                self.should_quit = true;
-                return;
             }
             KeyCode::Char('?') => {
-                self.show_help = true;
-                return;
+                self.show_help = !self.show_help;
             }
             KeyCode::Char('h') => {
                 self.show_dead_sessions = !self.show_dead_sessions;
                 self.refresh_tree();
-                return;
             }
-            _ => {}
-        }
-
-        self.handle_tree_key(key);
-    }
-
-    fn handle_tree_key(&mut self, key: KeyEvent) {
-        match key.code {
-            // CRUD keys
             KeyCode::Char('n') => self.start_new_session(),
             KeyCode::Char('G') => self.start_new_group(),
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('m') => self.start_move_session(),
             KeyCode::Char('d') => self.start_delete(),
             KeyCode::Char('x') => self.kill_tmux_session(),
-            // Navigation / selection delegated to TreeState
             _ => {
                 if let Some(action) = self.tree_state.handle_key(key, &self.tree) {
                     self.handle_tree_action(action);
@@ -618,7 +714,8 @@ impl App {
 
     /// Suspend the TUI, attach to a tmux session, then restore the TUI.
     fn attach_tmux_session(&mut self, tmux_name: &str) {
-        // Leave ratatui's alternate screen and raw mode so tmux can take over
+        // Leave ratatui's alternate screen, raw mode, and bracketed paste so tmux can take over
+        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
 
@@ -627,6 +724,7 @@ impl App {
         // Restore ratatui's terminal state
         let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
         let _ = crossterm::terminal::enable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
 
         // Force a full redraw — ratatui's internal buffer is stale after tmux
         self.needs_full_redraw = true;
@@ -653,6 +751,10 @@ impl App {
 
         if changed {
             self.tree_state.invalidate_cache();
+            // Re-sync interactor — selected session may have changed status
+            // (e.g., Active → Detached triggers conversation log transition)
+            self.refresh_cached_selected();
+            self.sync_interactor_to_selection();
         }
 
         self.cached_counts = count_sessions(&self.tree);

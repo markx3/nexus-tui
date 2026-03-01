@@ -125,6 +125,90 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 }
             }
         }
+        cli::Commands::Send { session_name, text } => {
+            let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
+            if !tmux.is_available() {
+                color_eyre::eyre::bail!("tmux is not available");
+            }
+            tmux.send_keys(&session_name, &tmux::SendKeysArgs::Literal(text))?;
+            if json {
+                println!(r#"{{"status":"sent","session":"{}"}}"#, session_name);
+            } else {
+                println!("Sent to '{}'", session_name);
+            }
+        }
+        cli::Commands::Capture { session_name, strip } => {
+            let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
+            if !tmux.is_available() {
+                color_eyre::eyre::bail!("tmux is not available");
+            }
+            let raw = tmux.capture_pane(&session_name)?;
+            if strip {
+                let sanitized = ansi::sanitize_ansi(raw.as_bytes());
+                // Remove all remaining escape sequences for plain text
+                let plain = String::from_utf8_lossy(&sanitized)
+                    .replace('\x1b', "");
+                print!("{}", plain);
+            } else {
+                print!("{}", raw);
+            }
+        }
+        cli::Commands::Delete { session_id } => {
+            let _lock = acquire_lock()?;
+            // Kill tmux session if active
+            let tree = db.get_tree()?;
+            if let Some(session) = find_session_in_tree(&tree, &session_id) {
+                if session.status == types::SessionStatus::Active {
+                    if let Some(ref tmux_name) = session.tmux_name {
+                        let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
+                        let _ = tmux.kill_session(tmux_name);
+                    }
+                }
+            }
+            db.delete_session(&session_id)?;
+            if json {
+                println!(r#"{{"status":"deleted","session":"{}"}}"#, session_id);
+            } else {
+                println!("Deleted session '{}'", session_id);
+            }
+        }
+        cli::Commands::Rename { session_id, name } => {
+            let _lock = acquire_lock()?;
+            db.update_session_name(&session_id, &name)?;
+            if json {
+                println!(
+                    r#"{{"status":"renamed","session":"{}","name":"{}"}}"#,
+                    session_id, name
+                );
+            } else {
+                println!("Renamed session '{}' to '{}'", session_id, name);
+            }
+        }
+        cli::Commands::Move { session_id, group } => {
+            let _lock = acquire_lock()?;
+            let gid = match db.get_group_id_by_name(&group)? {
+                Some(gid) => gid,
+                None => color_eyre::eyre::bail!("Group '{}' not found", group),
+            };
+            db.move_session_to_group(&session_id, gid)?;
+            if json {
+                println!(
+                    r#"{{"status":"moved","session":"{}","group":"{}"}}"#,
+                    session_id, group
+                );
+            } else {
+                println!("Moved session '{}' to group '{}'", session_id, group);
+            }
+        }
+        cli::Commands::GroupCreate { name } => {
+            let _lock = acquire_lock()?;
+            let gid = db.create_group(&name, "")?;
+            if json {
+                println!(r#"{{"status":"created","group":"{}","id":{}}}"#, name, gid);
+            } else {
+                println!("Created group '{}' (id: {})", name, gid);
+            }
+        }
     }
     Ok(())
 }

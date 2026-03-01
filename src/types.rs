@@ -100,6 +100,35 @@ pub enum InputContext {
     MoveSession { session_id: String },
 }
 
+/// Nexus commands triggered by Alt+key in the interactor.
+#[derive(Debug)]
+pub enum NexusCommand {
+    CursorDown,
+    CursorUp,
+    ToggleExpand,
+    NewSession,
+    DeleteSelected,
+    RenameSelected,
+    MoveSession,
+    NewGroup,
+    KillTmux,
+    FullscreenAttach,
+    ToggleHelp,
+    Quit,
+    ToggleDeadSessions,
+}
+
+/// Result from routing an event through the interactor.
+#[derive(Debug)]
+pub enum RouteResult {
+    /// Event was forwarded to tmux.
+    Forwarded,
+    /// Event is a nexus command that App should dispatch.
+    NexusCommand(NexusCommand),
+    /// Event was ignored (modal overlay active, unrecognized key).
+    Ignored,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionSummary {
     pub session_id: SessionId,

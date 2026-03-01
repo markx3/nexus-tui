@@ -1,9 +1,10 @@
 use std::sync::mpsc;
 
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::text::Text;
 
 use crate::conversation;
-use crate::tmux::TmuxManager;
+use crate::tmux::{key_event_to_send_args, TmuxManager};
 use crate::types::*;
 
 /// State for the session interactor panel.
@@ -106,11 +107,6 @@ impl InteractorState {
         }
     }
 
-    /// Get a reference to the TmuxManager for send_keys and paste operations.
-    pub fn tmux(&self) -> &TmuxManager {
-        &self.tmux
-    }
-
     /// Load conversation log for a dead/detached session.
     fn load_conversation_log(&mut self, session: &SessionSummary) {
         if let Some(ref path) = session.jsonl_path {
@@ -133,5 +129,75 @@ impl InteractorState {
     /// Scroll conversation log down.
     pub fn scroll_down(&mut self, amount: u16) {
         self.log_scroll_offset = self.log_scroll_offset.saturating_add(amount);
+    }
+
+    /// Route an input event: Alt→NexusCommand, forward→tmux, or ignored.
+    ///
+    /// `current_tmux_name` is the tmux session name to forward keys to.
+    /// When `None` (no active tmux pane), non-Alt keys are ignored.
+    pub fn route_event(
+        &mut self,
+        event: &Event,
+        current_tmux_name: Option<&str>,
+    ) -> RouteResult {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                // Alt+key → NexusCommand
+                if key.modifiers.contains(KeyModifiers::ALT) {
+                    return match key.code {
+                        KeyCode::Char('j') => RouteResult::NexusCommand(NexusCommand::CursorDown),
+                        KeyCode::Char('k') => RouteResult::NexusCommand(NexusCommand::CursorUp),
+                        KeyCode::Enter => RouteResult::NexusCommand(NexusCommand::ToggleExpand),
+                        KeyCode::Char('n') => RouteResult::NexusCommand(NexusCommand::NewSession),
+                        KeyCode::Char('d') => RouteResult::NexusCommand(NexusCommand::DeleteSelected),
+                        KeyCode::Char('r') => RouteResult::NexusCommand(NexusCommand::RenameSelected),
+                        KeyCode::Char('m') => RouteResult::NexusCommand(NexusCommand::MoveSession),
+                        KeyCode::Char('g') => RouteResult::NexusCommand(NexusCommand::NewGroup),
+                        KeyCode::Char('x') => RouteResult::NexusCommand(NexusCommand::KillTmux),
+                        KeyCode::Char('f') => RouteResult::NexusCommand(NexusCommand::FullscreenAttach),
+                        KeyCode::Char('h') | KeyCode::Char('?') => {
+                            RouteResult::NexusCommand(NexusCommand::ToggleHelp)
+                        }
+                        KeyCode::Char('q') => RouteResult::NexusCommand(NexusCommand::Quit),
+                        KeyCode::Char('H') => {
+                            RouteResult::NexusCommand(NexusCommand::ToggleDeadSessions)
+                        }
+                        _ => RouteResult::Ignored,
+                    };
+                }
+
+                // Non-Alt key → forward to tmux if we have an active pane
+                if let Some(tmux_name) = current_tmux_name {
+                    if let Some(args) = key_event_to_send_args(key) {
+                        let _ = self.tmux.send_keys(tmux_name, &args);
+                        return RouteResult::Forwarded;
+                    }
+                }
+
+                // No active tmux pane — handle scroll for conversation log
+                if matches!(self.current_content, Some(SessionContent::ConversationLog(_))) {
+                    match key.code {
+                        KeyCode::Up => { self.scroll_up(1); return RouteResult::Forwarded; }
+                        KeyCode::Down => { self.scroll_down(1); return RouteResult::Forwarded; }
+                        KeyCode::PageUp => { self.scroll_up(10); return RouteResult::Forwarded; }
+                        KeyCode::PageDown => { self.scroll_down(10); return RouteResult::Forwarded; }
+                        _ => {}
+                    }
+                }
+
+                RouteResult::Ignored
+            }
+            Event::Paste(text) => {
+                // Paste → load-buffer + paste-buffer (with 1MB limit)
+                if let Some(tmux_name) = current_tmux_name {
+                    if text.len() <= 1_048_576 {
+                        let _ = self.tmux.load_buffer_and_paste(tmux_name, text);
+                        return RouteResult::Forwarded;
+                    }
+                }
+                RouteResult::Ignored
+            }
+            _ => RouteResult::Ignored,
+        }
     }
 }

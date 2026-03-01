@@ -47,4 +47,45 @@ pub enum Commands {
     },
     /// List configured groups
     Groups,
+    /// Send text to a tmux session
+    Send {
+        /// Session name in tmux
+        session_name: String,
+        /// Text to send (literal)
+        text: String,
+    },
+    /// Capture the contents of a tmux session pane
+    Capture {
+        /// Session name in tmux
+        session_name: String,
+        /// Strip ANSI escape sequences from output
+        #[arg(long)]
+        strip: bool,
+    },
+    /// Delete a session from the database
+    Delete {
+        /// Session ID
+        session_id: String,
+    },
+    /// Rename a session
+    Rename {
+        /// Session ID
+        session_id: String,
+        /// New display name
+        name: String,
+    },
+    /// Move a session to a different group
+    Move {
+        /// Session ID
+        session_id: String,
+        /// Target group name
+        #[arg(long)]
+        group: String,
+    },
+    /// Create a new group
+    #[command(name = "group-create")]
+    GroupCreate {
+        /// Group name
+        name: String,
+    },
 }
