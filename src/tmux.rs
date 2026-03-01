@@ -40,6 +40,7 @@ impl TmuxManager {
     pub fn is_available(&self) -> bool {
         Command::new("tmux")
             .arg("-V")
+            .stderr(Stdio::null())
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -50,6 +51,7 @@ impl TmuxManager {
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["new-session", "-d", "-s", name, "-c", cwd, "claude"])
+            .stderr(Stdio::null())
             .status()
             .wrap_err("failed to run tmux new-session")?;
 
@@ -73,12 +75,14 @@ impl TmuxManager {
             Command::new("tmux")
                 .args(["-L", &self.socket_name])
                 .args(["switch-client", "-t", name])
+                .stderr(Stdio::null())
                 .status()
                 .wrap_err("failed to run tmux switch-client")?
         } else {
             Command::new("tmux")
                 .args(["-L", &self.socket_name])
                 .args(["attach-session", "-t", name])
+                .stderr(Stdio::null())
                 .status()
                 .wrap_err("failed to run tmux attach-session")?
         };
@@ -107,6 +111,7 @@ impl TmuxManager {
                 "-F",
                 "#{session_name}:#{window_name}:#{session_attached}:#{pane_current_command}",
             ])
+            .stderr(Stdio::null())
             .output()
             .wrap_err("failed to run tmux list-sessions")?;
 
@@ -124,6 +129,7 @@ impl TmuxManager {
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["kill-session", "-t", name])
+            .stderr(Stdio::null())
             .status()
             .wrap_err("failed to run tmux kill-session")?;
 
@@ -137,14 +143,42 @@ impl TmuxManager {
         Ok(())
     }
 
-    /// Set up Nexus-specific key bindings on the nexus socket.
+    /// Configure the nexus tmux server: true color support + keybindings.
     ///
-    /// Binds `Ctrl+Q` to detach from the session, providing a consistent
-    /// way to return to the Nexus TUI.
-    pub fn setup_keybindings(&self) -> Result<()> {
+    /// Sets `default-terminal`, `terminal-overrides`, and `COLORTERM` so
+    /// programs inside tmux (Claude Code) detect and use true color.
+    /// Also binds `Ctrl+Q` to detach-client for a consistent return path.
+    ///
+    /// Safe to call multiple times — idempotent. Call after creating the
+    /// first session (which starts the server) and at startup if the server
+    /// is already running.
+    pub fn configure_server(&self) -> Result<()> {
+        // 256-color base terminal type for $TERM inside panes
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-option", "-g", "default-terminal", "tmux-256color"])
+            .stderr(Stdio::null())
+            .status();
+
+        // True color passthrough: works with any outer terminal (Ghostty, iTerm2, etc.)
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-option", "-sa", "terminal-overrides", ",*:Tc"])
+            .stderr(Stdio::null())
+            .status();
+
+        // Propagate COLORTERM=truecolor to programs inside tmux panes
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-environment", "-g", "COLORTERM", "truecolor"])
+            .stderr(Stdio::null())
+            .status();
+
+        // Ctrl+Q → detach (consistent way to return to Nexus TUI)
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["bind-key", "-n", "C-q", "detach-client"])
+            .stderr(Stdio::null())
             .status()
             .wrap_err("failed to run tmux bind-key")?;
 
@@ -163,6 +197,7 @@ impl TmuxManager {
         let output = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["capture-pane", "-t", session_name, "-p", "-e", "-N"])
+            .stderr(Stdio::null())
             .output()
             .wrap_err("failed to run tmux capture-pane")?;
 
@@ -176,7 +211,11 @@ impl TmuxManager {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// Send keys to a tmux session. Fire-and-forget via `Command::spawn()`.
+    /// Send keys to a tmux session synchronously via `Command::status()`.
+    ///
+    /// Uses blocking wait to ensure keystroke ordering — rapid typing won't
+    /// cause out-of-order delivery. The ~2-5ms overhead per key is acceptable
+    /// since we process one event per frame.
     ///
     /// `Literal` args use `-l` flag (safe for any user text).
     /// `Named` args use the key name directly (compile-time constants).
@@ -198,15 +237,37 @@ impl TmuxManager {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
-            .wrap_err("failed to spawn tmux send-keys")?;
+            .status()
+            .wrap_err("failed to run tmux send-keys")?;
 
         Ok(())
     }
 
-    /// Resize a tmux pane to the given dimensions.
+    /// Resize a tmux session's window and pane to the given dimensions.
+    ///
+    /// Uses `resize-window` first (required for detached sessions where the
+    /// window size constrains the pane), then `resize-pane` as a fallback.
     pub fn resize_pane(&self, session_name: &str, cols: u16, rows: u16) -> Result<()> {
         Self::validate_target(session_name)?;
+        let cols_str = cols.to_string();
+        let rows_str = rows.to_string();
+
+        // resize-window works for detached sessions (resize-pane alone won't
+        // exceed the window dimensions, which default to 80x24 for detached)
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args([
+                "resize-window",
+                "-t",
+                session_name,
+                "-x",
+                &cols_str,
+                "-y",
+                &rows_str,
+            ])
+            .stderr(Stdio::null())
+            .status();
+
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args([
@@ -214,10 +275,11 @@ impl TmuxManager {
                 "-t",
                 session_name,
                 "-x",
-                &cols.to_string(),
+                &cols_str,
                 "-y",
-                &rows.to_string(),
+                &rows_str,
             ])
+            .stderr(Stdio::null())
             .status()
             .wrap_err("failed to run tmux resize-pane")?;
 
@@ -615,12 +677,12 @@ session-c:win3:0:\n";
 
     #[test]
     #[ignore]
-    fn test_setup_keybindings() {
+    fn test_configure_server() {
         let mgr = TmuxManager::new("nexus-test-kb");
 
-        // Need at least one session for bind-key to work
+        // Need at least one session for server to exist
         mgr.launch_claude_session("kb-test", "/tmp").unwrap();
-        mgr.setup_keybindings().unwrap();
+        mgr.configure_server().unwrap();
         mgr.kill_session("kb-test").unwrap();
     }
 

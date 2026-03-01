@@ -73,10 +73,14 @@ impl App {
         let selection = SelectionState::default();
         let cached_counts = count_sessions(&tree);
 
-        // Spawn capture worker if tmux is available
+        // Spawn capture worker and configure tmux server if tmux is available
         let interactor_state = if tmux_available {
-            let (session_tx, content_rx) = capture_worker::spawn(tmux.clone());
-            Some(InteractorState::new(tmux.clone(), content_rx, session_tx))
+            // Configure true color + keybindings (no-op if server not yet started)
+            if !tmux_sessions.is_empty() {
+                let _ = tmux.configure_server();
+            }
+            let (session_tx, content_rx, nudge_tx) = capture_worker::spawn(tmux.clone());
+            Some(InteractorState::new(tmux.clone(), content_rx, session_tx, nudge_tx))
         } else {
             None
         };
@@ -204,10 +208,8 @@ impl App {
         // Resize events — update interactor pane geometry
         if let Event::Resize(cols, rows) = event {
             if let Some(ref mut is) = self.interactor_state {
-                // Subtract approximate borders for interactor inner area
-                let interactor_cols = (cols * 75 / 100).saturating_sub(2);
-                let interactor_rows = (rows * 83 / 100).saturating_sub(5);
-                is.resize_if_needed(interactor_cols, interactor_rows);
+                let (ic, ir) = interactor_inner_size(cols, rows);
+                is.resize_if_needed(ic, ir);
             }
             return;
         }
@@ -332,12 +334,11 @@ impl App {
     fn handle_tree_action(&mut self, action: TreeAction) {
         match action {
             TreeAction::Select(target) => {
-                if let SelectionTarget::Session(ref id) = target {
-                    let id_owned = id.clone();
+                if matches!(target, SelectionTarget::Session(_)) {
                     self.selection.selected = Some(target);
                     self.refresh_cached_selected();
                     self.sync_interactor_to_selection();
-                    self.try_launch_session(&id_owned);
+                    self.ensure_session_launched();
                 } else {
                     self.selection.selected = Some(target);
                     self.refresh_cached_selected();
@@ -359,10 +360,18 @@ impl App {
     }
 
     /// Sync interactor state to the currently selected session.
+    ///
+    /// Also triggers an immediate tmux pane resize so the embedded session
+    /// renders at the correct dimensions before the first capture arrives.
     fn sync_interactor_to_selection(&mut self) {
         if let Some(ref session) = self.cached_selected {
             if let Some(ref mut is) = self.interactor_state {
                 is.switch_session(session);
+                // Resize the tmux pane to match the interactor panel dimensions.
+                if let Ok((cols, rows)) = crossterm::terminal::size() {
+                    let (ic, ir) = interactor_inner_size(cols, rows);
+                    is.resize_if_needed(ic, ir);
+                }
             }
         } else if let Some(ref mut is) = self.interactor_state {
             is.clear();
@@ -665,7 +674,7 @@ impl App {
                         self.refresh_tree();
                         return;
                     }
-                    let _ = self.tmux.setup_keybindings();
+                    let _ = self.tmux.configure_server();
                     self.attach_tmux_session(&tmux_name);
                 }
                 self.refresh_tree();
@@ -677,42 +686,44 @@ impl App {
         }
     }
 
-    fn try_launch_session(&mut self, session_id: &str) {
+    /// Launch a detached tmux session in the background for the currently
+    /// selected session so the interactor can capture it. Does NOT attach
+    /// fullscreen — use `fullscreen_attach` (Alt+F) for that.
+    fn ensure_session_launched(&mut self) {
         if !self.tmux_available {
             return;
         }
 
-        let session = match find_session_in_tree(&self.tree, session_id) {
+        let session = match self.cached_selected.as_ref() {
             Some(s) => s.clone(),
             None => return,
         };
 
-        let cwd = match session.cwd.as_ref().map(|p| p.to_string_lossy().to_string()) {
-            Some(c) => c,
-            None => return,
-        };
-
-        let tmux_name = match session.tmux_name.as_ref() {
-            Some(n) => n.clone(),
-            None => sanitize_tmux_name(session_id),
-        };
-
         match session.status {
             SessionStatus::Active => {
-                // Attach to running session
-                self.attach_tmux_session(&tmux_name);
+                // Already running — capture worker handles display
             }
             SessionStatus::Detached => {
-                // Re-launch claude in same cwd
+                let cwd = match session.cwd.as_ref().map(|p| p.to_string_lossy().to_string()) {
+                    Some(c) => c,
+                    None => return,
+                };
+                let tmux_name = match session.tmux_name.as_ref() {
+                    Some(n) => n.clone(),
+                    None => sanitize_tmux_name(&session.session_id),
+                };
+
                 if let Err(e) = self.tmux.launch_claude_session(&tmux_name, &cwd) {
                     self.status_message =
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
                     return;
                 }
-                let _ = self.tmux.setup_keybindings();
-                let _ = self.db.update_session_status(session_id, SessionStatus::Active);
-                self.attach_tmux_session(&tmux_name);
+                let _ = self.tmux.configure_server();
+                let _ = self.db.update_session_status(&session.session_id, SessionStatus::Active);
                 self.refresh_tree();
+                // Re-sync so interactor switches from conversation log to live capture
+                self.refresh_cached_selected();
+                self.sync_interactor_to_selection();
             }
             SessionStatus::Dead => {
                 self.status_message = Some((
@@ -745,6 +756,12 @@ impl App {
             self.status_message =
                 Some((format!("tmux attach failed: {e}"), Instant::now()));
         }
+
+        // Re-sync after fullscreen: the capture worker may have stopped during
+        // attachment (error → cleared session), and session status may have
+        // changed (e.g., Detached→Active via launch before attach).
+        self.refresh_tree();
+        self.sync_interactor_to_selection();
     }
 
     // -----------------------------------------------------------------------
@@ -806,6 +823,19 @@ impl App {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
+
+/// Compute the exact inner dimensions of the interactor panel.
+///
+/// Mirrors the layout in `ui.rs`: top_bar (3 rows) + main area, right column
+/// is 75% width, interactor is 83% of main height. Subtract 2 for borders.
+fn interactor_inner_size(term_cols: u16, term_rows: u16) -> (u16, u16) {
+    let main_height = term_rows.saturating_sub(3); // top_bar = Length(3)
+    let right_width = term_cols * 75 / 100; // Percentage(75)
+    let interactor_height = main_height * 83 / 100; // Percentage(83)
+    let inner_cols = right_width.saturating_sub(2);
+    let inner_rows = interactor_height.saturating_sub(2);
+    (inner_cols, inner_rows)
+}
 
 fn find_session_in_tree<'a>(tree: &'a [TreeNode], session_id: &str) -> Option<&'a SessionSummary> {
     for node in tree {

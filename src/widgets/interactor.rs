@@ -57,8 +57,12 @@ pub fn render_interactor(
 }
 
 /// Render live terminal content from the capture worker.
+///
+/// Scrolls to the bottom so the input cursor area is always visible.
 fn render_live(frame: &mut Frame, area: Rect, text: &Text<'static>) {
-    let paragraph = Paragraph::new(text.clone());
+    let total_lines = text.lines.len() as u16;
+    let scroll_offset = total_lines.saturating_sub(area.height);
+    let paragraph = Paragraph::new(text.clone()).scroll((scroll_offset, 0));
     frame.render_widget(paragraph, area);
 }
 

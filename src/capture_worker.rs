@@ -2,6 +2,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use ansi_to_tui::IntoText;
+use ratatui::style::Color;
 use ratatui::text::Text;
 
 use crate::ansi::sanitize_ansi;
@@ -12,26 +13,29 @@ use crate::tmux::TmuxManager;
 /// Returns channels for communicating with the worker:
 /// - `session_tx`: send session names to capture (empty string = stop)
 /// - `content_rx`: receive parsed `Text<'static>` (None = session gone)
+/// - `nudge_tx`: send after forwarding a key to wake the worker immediately
 pub fn spawn(
     tmux: TmuxManager,
-) -> (mpsc::Sender<String>, mpsc::Receiver<Option<Text<'static>>>) {
+) -> (mpsc::Sender<String>, mpsc::Receiver<Option<Text<'static>>>, mpsc::Sender<()>) {
     let (session_tx, session_rx) = mpsc::channel::<String>();
     let (content_tx, content_rx) = mpsc::channel::<Option<Text<'static>>>();
+    let (nudge_tx, nudge_rx) = mpsc::channel::<()>();
 
     std::thread::Builder::new()
         .name("nexus-capture".to_string())
         .spawn(move || {
-            capture_loop(tmux, session_rx, content_tx);
+            capture_loop(tmux, session_rx, content_tx, nudge_rx);
         })
         .expect("failed to spawn capture worker thread");
 
-    (session_tx, content_rx)
+    (session_tx, content_rx, nudge_tx)
 }
 
 fn capture_loop(
     tmux: TmuxManager,
     session_rx: mpsc::Receiver<String>,
     content_tx: mpsc::Sender<Option<Text<'static>>>,
+    nudge_rx: mpsc::Receiver<()>,
 ) {
     let mut current_session = String::new();
     let mut last_raw: Vec<u8> = Vec::new();
@@ -39,9 +43,9 @@ fn capture_loop(
 
     loop {
         // Check for session change (non-blocking)
-        if let Ok(new_session) = session_rx.try_recv() {
+        while let Ok(new_session) = session_rx.try_recv() {
             current_session = new_session;
-            last_raw.clear(); // force re-parse on session switch
+            last_raw.clear();
             poll_interval = Duration::from_millis(30);
         }
 
@@ -66,7 +70,8 @@ fn capture_loop(
                     last_raw = raw_bytes.to_vec();
                     // Parse ANSI on the worker thread — main thread receives ready-to-render Text
                     let sanitized = sanitize_ansi(raw_bytes);
-                    let parsed: Text<'static> = sanitized.into_text().unwrap_or_default();
+                    let mut parsed: Text<'static> = sanitized.into_text().unwrap_or_default();
+                    normalize_resets(&mut parsed);
                     if content_tx.send(Some(parsed)).is_err() {
                         return; // Main thread dropped receiver
                     }
@@ -87,6 +92,38 @@ fn capture_loop(
             }
         }
 
-        std::thread::sleep(poll_interval);
+        // Sleep until poll interval expires or a nudge arrives (key forwarded).
+        // Nudge resets backoff so the next capture happens immediately.
+        match nudge_rx.recv_timeout(poll_interval) {
+            Ok(()) => {
+                // Drain any extra nudges that piled up
+                while nudge_rx.try_recv().is_ok() {}
+                poll_interval = Duration::from_millis(30);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Replace `Color::Reset` with `None` in all spans.
+///
+/// `ansi-to-tui` maps SGR resets (\e[0m, \e[39m, \e[49m) to `Color::Reset`,
+/// which tells ratatui to send an explicit SGR reset to the terminal. This
+/// overrides the nexus panel's themed background/foreground with the terminal's
+/// default colors, causing a visible color mismatch.
+///
+/// Setting these to `None` instead means "inherit from parent widget", so the
+/// panel's theme colors show through for any text without explicit colors.
+fn normalize_resets(text: &mut Text<'static>) {
+    for line in &mut text.lines {
+        for span in &mut line.spans {
+            if span.style.fg == Some(Color::Reset) {
+                span.style.fg = None;
+            }
+            if span.style.bg == Some(Color::Reset) {
+                span.style.bg = None;
+            }
+        }
     }
 }
