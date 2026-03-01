@@ -147,11 +147,6 @@ fn run_tui() -> Result<()> {
     let tree = db.get_visible_tree(false)?;
     let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
     let tmux_available = tmux.is_available();
-    if tmux_available {
-        if let Err(e) = tmux.setup_keybindings() {
-            eprintln!("Warning: failed to setup tmux keybindings: {e}");
-        }
-    }
 
     let tmux_sessions = if tmux_available {
         tmux.list_sessions().unwrap_or_default()

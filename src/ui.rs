@@ -78,7 +78,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         app.selection.focused_panel == FocusPanel::Radar,
     );
 
-    widgets::activity::render_activity_strip(frame, bottom_strip, &app.tmux_sessions);
+    let known_tmux_names = collect_tmux_names(&app.tree);
+    let tracked_sessions: Vec<_> = app
+        .tmux_sessions
+        .iter()
+        .filter(|s| known_tmux_names.contains(s.session_id.as_str()))
+        .cloned()
+        .collect();
+    widgets::activity::render_activity_strip(frame, bottom_strip, &tracked_sessions);
 
     // Input prompt overlay (renders at bottom of tree panel area)
     match app.input_mode {
@@ -307,6 +314,24 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Collect all tmux_name values from the session tree.
+fn collect_tmux_names(tree: &[TreeNode]) -> std::collections::HashSet<&str> {
+    let mut names = std::collections::HashSet::new();
+    for node in tree {
+        match node {
+            TreeNode::Session(s) => {
+                if let Some(ref n) = s.tmux_name {
+                    names.insert(n.as_str());
+                }
+            }
+            TreeNode::Group(g) => {
+                names.extend(collect_tmux_names(&g.children));
+            }
+        }
+    }
+    names
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

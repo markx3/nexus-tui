@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::DefaultTerminal;
 use tachyonfx::Effect;
 
@@ -48,6 +49,8 @@ pub struct App {
     // Group picker state
     pub(crate) picker_groups: Vec<(GroupId, String)>,
     pub(crate) picker_cursor: usize,
+    // Set after returning from tmux attach to force a full redraw
+    needs_full_redraw: bool,
 }
 
 impl App {
@@ -90,6 +93,7 @@ impl App {
             show_dead_sessions: false,
             picker_groups: Vec::new(),
             picker_cursor: 0,
+            needs_full_redraw: false,
         }
     }
 
@@ -117,6 +121,10 @@ impl App {
                 }
             }
 
+            if self.needs_full_redraw {
+                terminal.clear()?;
+                self.needs_full_redraw = false;
+            }
             terminal.draw(|frame| ui::draw(frame, &mut self, elapsed))?;
 
             let poll_timeout = if self.boot_done {
@@ -566,7 +574,11 @@ impl App {
                     if let Err(e) = self.tmux.launch_claude_session(&tmux_name, cwd) {
                         self.status_message =
                             Some((format!("tmux launch failed: {e}"), Instant::now()));
+                        self.refresh_tree();
+                        return;
                     }
+                    let _ = self.tmux.setup_keybindings();
+                    self.attach_tmux_session(&tmux_name);
                 }
                 self.refresh_tree();
             }
@@ -600,10 +612,7 @@ impl App {
         match session.status {
             SessionStatus::Active => {
                 // Attach to running session
-                if let Err(e) = self.tmux.resume_session(&tmux_name) {
-                    self.status_message =
-                        Some((format!("tmux resume failed: {e}"), Instant::now()));
-                }
+                self.attach_tmux_session(&tmux_name);
             }
             SessionStatus::Detached => {
                 // Re-launch claude in same cwd
@@ -612,17 +621,39 @@ impl App {
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
                     return;
                 }
+                let _ = self.tmux.setup_keybindings();
                 let _ = self.db.update_session_status(session_id, SessionStatus::Active);
+                self.attach_tmux_session(&tmux_name);
                 self.refresh_tree();
             }
             SessionStatus::Dead => {
-                // Dead sessions from scanner, not resumable
                 self.status_message = Some((
                     "Dead session (not resumable). Only Nexus-created sessions can be resumed."
                         .to_string(),
                     Instant::now(),
                 ));
             }
+        }
+    }
+
+    /// Suspend the TUI, attach to a tmux session, then restore the TUI.
+    fn attach_tmux_session(&mut self, tmux_name: &str) {
+        // Leave ratatui's alternate screen and raw mode so tmux can take over
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+
+        let result = self.tmux.resume_session(tmux_name);
+
+        // Restore ratatui's terminal state
+        let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
+        let _ = crossterm::terminal::enable_raw_mode();
+
+        // Force a full redraw — ratatui's internal buffer is stale after tmux
+        self.needs_full_redraw = true;
+
+        if let Err(e) = result {
+            self.status_message =
+                Some((format!("tmux attach failed: {e}"), Instant::now()));
         }
     }
 
