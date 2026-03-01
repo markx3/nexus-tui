@@ -827,13 +827,12 @@ impl App {
 /// Compute the exact inner dimensions of the interactor panel.
 ///
 /// Mirrors the layout in `ui.rs`: top_bar (3 rows) + main area, right column
-/// is 75% width, interactor is 83% of main height. Subtract 2 for borders.
+/// is 87% width (tree is 13%), interactor fills full height. Subtract 2 for borders.
 fn interactor_inner_size(term_cols: u16, term_rows: u16) -> (u16, u16) {
     let main_height = term_rows.saturating_sub(3); // top_bar = Length(3)
-    let right_width = term_cols * 75 / 100; // Percentage(75)
-    let interactor_height = main_height * 83 / 100; // Percentage(83)
+    let right_width = term_cols * 87 / 100; // tree is 13%, right column fills rest
     let inner_cols = right_width.saturating_sub(2);
-    let inner_rows = interactor_height.saturating_sub(2);
+    let inner_rows = main_height.saturating_sub(2);
     (inner_cols, inner_rows)
 }
 
