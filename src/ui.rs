@@ -79,6 +79,20 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 
     widgets::activity::render_activity_strip(frame, bottom_strip, &app.tmux_windows);
 
+    // Status message overlay (Todo 023)
+    if let Some((ref msg, _)) = app.status_message {
+        let msg_width = bottom_strip.width.min(msg.len() as u16 + 4);
+        let msg_area = ratatui::layout::Rect {
+            x: bottom_strip.x,
+            y: bottom_strip.y.saturating_sub(1),
+            width: msg_width,
+            height: 1,
+        };
+        let status = Paragraph::new(format!(" {msg} "))
+            .style(Style::new().fg(theme::HAZARD).bg(theme::SURFACE));
+        frame.render_widget(status, msg_area);
+    }
+
     // Apply TachyonFX boot effects (skip once done)
     if !app.boot_done {
         let zones = [top_bar, left_panel, radar_area, detail_area, bottom_strip];

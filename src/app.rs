@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use color_eyre::Result;
@@ -18,7 +19,6 @@ const TMUX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 pub struct App {
     pub should_quit: bool,
-    pub(crate) dirty: bool,
     pub(crate) boot_done: bool,
     last_tick: Instant,
     pub(crate) boot_effects: Vec<Effect>,
@@ -32,6 +32,11 @@ pub struct App {
     last_tmux_poll: Instant,
     #[allow(dead_code)]
     config: NexusConfig,
+    // Cached values (updated on tmux poll and cursor change) — Todo 015
+    pub(crate) cached_counts: (usize, usize),
+    pub(crate) cached_selected: Option<SessionSummary>,
+    // Status message overlay — Todo 023
+    pub(crate) status_message: Option<(String, Instant)>,
 }
 
 impl App {
@@ -46,13 +51,13 @@ impl App {
         let mut radar_state = RadarState::new();
         radar_state.compute_blips(&tree);
         let selection = SelectionState::default();
+        let cached_counts = count_sessions(&tree);
 
         Self {
             should_quit: false,
-            dirty: true,
             boot_done: false,
             last_tick: Instant::now(),
-            boot_effects: theme::create_boot_effects(),
+            boot_effects: theme::fx_boot(),
             tree,
             tree_state,
             radar_state,
@@ -62,6 +67,9 @@ impl App {
             tmux_windows,
             last_tmux_poll: Instant::now(),
             config,
+            cached_counts,
+            cached_selected: None,
+            status_message: None,
         }
     }
 
@@ -82,13 +90,24 @@ impl App {
                 // Mark sessions as active based on tmux windows
                 mark_active_sessions(&mut self.tree, &self.tmux_windows);
 
+                // Invalidate tree cache since tree data changed
+                self.tree_state.invalidate_cache();
+
+                // Refresh cached counts
+                self.cached_counts = count_sessions(&self.tree);
+
                 self.last_tmux_poll = now;
-                self.dirty = true;
+            }
+
+            // Auto-clear status message after 5 seconds
+            if let Some((_, ts)) = &self.status_message {
+                if ts.elapsed() >= Duration::from_secs(5) {
+                    self.status_message = None;
+                }
             }
 
             // Always redraw: radar sweep animates continuously
             terminal.draw(|frame| ui::draw(frame, &mut self, elapsed))?;
-            self.dirty = false;
 
             let poll_timeout = if self.boot_done {
                 TICK_RATE
@@ -99,7 +118,6 @@ impl App {
             if event::poll(poll_timeout)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
-                        self.dirty = true;
                         self.handle_key(key);
                     }
                 }
@@ -147,6 +165,7 @@ impl App {
                     if let Some(id) = self.radar_state.selected_session() {
                         self.selection.selected =
                             Some(SelectionTarget::Session(id.to_string()));
+                        self.refresh_cached_selected();
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
@@ -154,6 +173,7 @@ impl App {
                     if let Some(id) = self.radar_state.selected_session() {
                         self.selection.selected =
                             Some(SelectionTarget::Session(id.to_string()));
+                        self.refresh_cached_selected();
                     }
                 }
                 KeyCode::Enter => {
@@ -161,6 +181,7 @@ impl App {
                     if let Some(id) = self.radar_state.selected_session().map(str::to_string) {
                         self.selection.selected =
                             Some(SelectionTarget::Session(id.clone()));
+                        self.refresh_cached_selected();
                         self.try_launch_session(&id);
                     }
                 }
@@ -176,9 +197,11 @@ impl App {
                     self.radar_state.select_by_session_id(id);
                     let id_owned = id.clone();
                     self.selection.selected = Some(target);
+                    self.refresh_cached_selected();
                     self.try_launch_session(&id_owned);
                 } else {
                     self.selection.selected = Some(target);
+                    self.refresh_cached_selected();
                 }
             }
             TreeAction::ToggleExpand(_) => {
@@ -190,9 +213,9 @@ impl App {
                         self.radar_state.select_by_session_id(id);
                     }
                     self.selection.selected = Some(target);
+                    self.refresh_cached_selected();
                 }
             }
-            _ => {}
         }
     }
 
@@ -201,60 +224,52 @@ impl App {
             return;
         }
 
-        // Find the session's cwd
-        let cwd = find_session_cwd(&self.tree, session_id);
-        let cwd = match cwd {
+        // Find the session's cwd (Todo 031: use find_session_in_tree directly)
+        let cwd = match find_session_in_tree(&self.tree, session_id)
+            .and_then(|s| s.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
+        {
             Some(c) => c,
             None => return,
         };
 
-        // Sanitize name for tmux (replace non-alphanumeric with dash)
+        // Sanitize name for tmux (Todo 013: keep full ID, replace non-alnum with dash)
         let tmux_name = sanitize_tmux_name(session_id);
 
-        // Check if already running
+        // Check if already running -- compare against sanitized name (Todo 013)
         let already_running = self
             .tmux_windows
             .iter()
-            .any(|w| w.session_id == session_id);
+            .any(|w| w.session_id == tmux_name);
 
+        // Surface tmux errors instead of silently swallowing (Todo 023)
         if already_running {
-            let _ = self.tmux.resume_session(&tmux_name);
-        } else {
-            let _ = self.tmux.launch_session(&tmux_name, &cwd);
+            if let Err(e) = self.tmux.resume_session(&tmux_name) {
+                self.status_message = Some((format!("tmux resume failed: {e}"), Instant::now()));
+            }
+        } else if let Err(e) = self.tmux.launch_session(&tmux_name, &cwd) {
+            self.status_message = Some((format!("tmux launch failed: {e}"), Instant::now()));
         }
     }
 
-    /// Get the currently selected session, if any.
+    /// Refresh the cached selected session from current selection state.
+    fn refresh_cached_selected(&mut self) {
+        self.cached_selected = match self.selection.selected.as_ref() {
+            Some(SelectionTarget::Session(id)) => {
+                find_session_in_tree(&self.tree, id).cloned()
+            }
+            _ => None,
+        };
+    }
+
+    /// Get the currently selected session, if any. Uses cached value (Todo 015).
     pub(crate) fn selected_session(&self) -> Option<&SessionSummary> {
-        let target = self.selection.selected.as_ref()?;
-        match target {
-            SelectionTarget::Session(id) => find_session_in_tree(&self.tree, id),
-            SelectionTarget::Group(_) => None,
-        }
+        self.cached_selected.as_ref()
     }
 
-    /// Count total and active sessions in the tree.
+    /// Count total and active sessions in the tree. Uses cached value (Todo 015).
     pub(crate) fn session_counts(&self) -> (usize, usize) {
-        count_sessions(&self.tree)
+        self.cached_counts
     }
-}
-
-fn find_session_cwd(tree: &[TreeNode], session_id: &str) -> Option<String> {
-    for node in tree {
-        match node {
-            TreeNode::Session(s) => {
-                if s.session_id == session_id {
-                    return s.cwd.as_ref().map(|p| p.to_string_lossy().to_string());
-                }
-            }
-            TreeNode::Group(g) => {
-                if let Some(cwd) = find_session_cwd(&g.children, session_id) {
-                    return Some(cwd);
-                }
-            }
-        }
-    }
-    None
 }
 
 fn find_session_in_tree<'a>(tree: &'a [TreeNode], session_id: &str) -> Option<&'a SessionSummary> {
@@ -296,24 +311,135 @@ fn count_sessions(tree: &[TreeNode]) -> (usize, usize) {
     (total, active)
 }
 
+/// Mark sessions as active based on tmux windows. Uses a HashSet for O(S+W) (Todo 018).
 fn mark_active_sessions(tree: &mut [TreeNode], windows: &[TmuxWindowInfo]) {
+    let active_ids: HashSet<&str> = windows.iter().map(|w| w.session_id.as_str()).collect();
+    mark_active_recursive(tree, &active_ids);
+}
+
+fn mark_active_recursive(tree: &mut [TreeNode], active_ids: &HashSet<&str>) {
     for node in tree.iter_mut() {
         match node {
             TreeNode::Session(s) => {
-                s.is_active = windows.iter().any(|w| w.session_id == s.session_id);
+                s.is_active = active_ids.contains(s.session_id.as_str());
             }
             TreeNode::Group(g) => {
-                mark_active_sessions(&mut g.children, windows);
+                mark_active_recursive(&mut g.children, active_ids);
             }
         }
     }
 }
 
+/// Sanitize a string for use as a tmux session name.
+/// Replaces non-alphanumeric characters (except dash) with dashes.
+/// Does NOT truncate -- keeps full ID for reliable matching (Todo 013).
 fn sanitize_tmux_name(s: &str) -> String {
-    // Use last 8 chars of session ID as tmux name
-    let short = if s.len() > 8 { &s[s.len() - 8..] } else { s };
-    short
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Tests (Todo 028)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_tmux_name_ascii() {
+        assert_eq!(sanitize_tmux_name("hello-world"), "hello-world");
+        assert_eq!(sanitize_tmux_name("a1b2c3"), "a1b2c3");
+    }
+
+    #[test]
+    fn test_sanitize_tmux_name_special_chars() {
+        assert_eq!(sanitize_tmux_name("foo.bar/baz"), "foo-bar-baz");
+        assert_eq!(sanitize_tmux_name("a b c"), "a-b-c");
+    }
+
+    #[test]
+    fn test_sanitize_tmux_name_preserves_full_id() {
+        let id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let sanitized = sanitize_tmux_name(id);
+        assert_eq!(sanitized, id); // UUIDs should pass through unchanged
+    }
+
+    #[test]
+    fn test_count_sessions_empty() {
+        let tree: Vec<TreeNode> = vec![];
+        assert_eq!(count_sessions(&tree), (0, 0));
+    }
+
+    #[test]
+    fn test_count_sessions_nested() {
+        use crate::mock;
+        let tree = mock::mock_tree();
+        let (total, active) = count_sessions(&tree);
+        assert_eq!(total, 5);
+        assert_eq!(active, 2);
+    }
+
+    #[test]
+    fn test_mark_active_sessions_matching() {
+        use crate::mock;
+        let mut tree = mock::mock_tree();
+
+        // First, clear all active flags
+        clear_active(&mut tree);
+
+        let windows = vec![TmuxWindowInfo {
+            session_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string(),
+            window_name: "test".to_string(),
+            is_active: true,
+            status: TmuxSessionStatus::Running,
+        }];
+
+        mark_active_sessions(&mut tree, &windows);
+
+        let (_, active) = count_sessions(&tree);
+        assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn test_mark_active_sessions_no_match() {
+        use crate::mock;
+        let mut tree = mock::mock_tree();
+        clear_active(&mut tree);
+
+        let windows = vec![TmuxWindowInfo {
+            session_id: "nonexistent-id".to_string(),
+            window_name: "test".to_string(),
+            is_active: true,
+            status: TmuxSessionStatus::Running,
+        }];
+
+        mark_active_sessions(&mut tree, &windows);
+
+        let (_, active) = count_sessions(&tree);
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn test_find_session_in_tree() {
+        use crate::mock;
+        let tree = mock::mock_tree();
+
+        let found = find_session_in_tree(&tree, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().display_name, "feat/scanner");
+
+        let not_found = find_session_in_tree(&tree, "nonexistent");
+        assert!(not_found.is_none());
+    }
+
+    fn clear_active(tree: &mut [TreeNode]) {
+        for node in tree {
+            match node {
+                TreeNode::Session(s) => s.is_active = false,
+                TreeNode::Group(g) => clear_active(&mut g.children),
+            }
+        }
+    }
 }
