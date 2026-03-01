@@ -7,6 +7,7 @@ use ratatui::DefaultTerminal;
 use tachyonfx::Effect;
 
 use crate::config::NexusConfig;
+use crate::db::Database;
 use crate::theme;
 use crate::tmux::TmuxManager;
 use crate::types::*;
@@ -28,15 +29,25 @@ pub struct App {
     pub(crate) selection: SelectionState,
     pub(crate) tmux: TmuxManager,
     pub(crate) tmux_available: bool,
-    pub(crate) tmux_windows: Vec<TmuxWindowInfo>,
+    pub(crate) tmux_sessions: Vec<TmuxSessionInfo>,
     last_tmux_poll: Instant,
     #[allow(dead_code)]
     config: NexusConfig,
-    // Cached values (updated on tmux poll and cursor change) — Todo 015
+    pub(crate) db: Database,
+    // Cached values (updated on tmux poll and cursor change)
     pub(crate) cached_counts: (usize, usize),
     pub(crate) cached_selected: Option<SessionSummary>,
-    // Status message overlay — Todo 023
+    // Status message overlay
     pub(crate) status_message: Option<(String, Instant)>,
+    // Input state for CRUD operations
+    pub(crate) input_mode: InputMode,
+    pub(crate) input_buffer: String,
+    pub(crate) input_context: Option<InputContext>,
+    pub(crate) show_help: bool,
+    pub(crate) show_dead_sessions: bool,
+    // Group picker state
+    pub(crate) picker_groups: Vec<(GroupId, String)>,
+    pub(crate) picker_cursor: usize,
 }
 
 impl App {
@@ -45,7 +56,8 @@ impl App {
         tree: Vec<TreeNode>,
         tmux: TmuxManager,
         tmux_available: bool,
-        tmux_windows: Vec<TmuxWindowInfo>,
+        tmux_sessions: Vec<TmuxSessionInfo>,
+        db: Database,
     ) -> Self {
         let tree_state = TreeState::new(&tree);
         let mut radar_state = RadarState::new();
@@ -64,12 +76,20 @@ impl App {
             selection,
             tmux,
             tmux_available,
-            tmux_windows,
+            tmux_sessions,
             last_tmux_poll: Instant::now(),
             config,
+            db,
             cached_counts,
             cached_selected: None,
             status_message: None,
+            input_mode: InputMode::Normal,
+            input_buffer: String::new(),
+            input_context: None,
+            show_help: false,
+            show_dead_sessions: false,
+            picker_groups: Vec::new(),
+            picker_cursor: 0,
         }
     }
 
@@ -82,20 +102,11 @@ impl App {
             // Advance radar sweep
             self.radar_state.advance_sweep(elapsed.as_secs_f64());
 
-            // Poll tmux for active windows periodically
+            // Poll tmux for active sessions periodically
             if self.tmux_available && now.duration_since(self.last_tmux_poll) >= TMUX_POLL_INTERVAL
             {
-                self.tmux_windows = self.tmux.list_windows().unwrap_or_default();
-
-                // Mark sessions as active based on tmux windows
-                mark_active_sessions(&mut self.tree, &self.tmux_windows);
-
-                // Invalidate tree cache since tree data changed
-                self.tree_state.invalidate_cache();
-
-                // Refresh cached counts
-                self.cached_counts = count_sessions(&self.tree);
-
+                self.tmux_sessions = self.tmux.list_sessions().unwrap_or_default();
+                self.reconcile_tmux_state();
                 self.last_tmux_poll = now;
             }
 
@@ -106,7 +117,6 @@ impl App {
                 }
             }
 
-            // Always redraw: radar sweep animates continuously
             terminal.draw(|frame| ui::draw(frame, &mut self, elapsed))?;
 
             let poll_timeout = if self.boot_done {
@@ -128,6 +138,24 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        match self.input_mode {
+            InputMode::Normal => self.handle_normal_key(key),
+            InputMode::TextInput => self.handle_text_input_key(key),
+            InputMode::Confirm => self.handle_confirm_key(key),
+            InputMode::GroupPicker => self.handle_group_picker_key(key),
+        }
+    }
+
+    fn handle_normal_key(&mut self, key: KeyEvent) {
+        // Help overlay intercepts everything except ? and Esc
+        if self.show_help {
+            match key.code {
+                KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
+                _ => self.show_help = false,
+            }
+            return;
+        }
+
         // Global keys first
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -149,44 +177,70 @@ impl App {
                 };
                 return;
             }
+            KeyCode::Char('?') => {
+                self.show_help = true;
+                return;
+            }
+            KeyCode::Char('h') if self.selection.focused_panel == FocusPanel::Tree => {
+                self.show_dead_sessions = !self.show_dead_sessions;
+                self.refresh_tree();
+                return;
+            }
             _ => {}
         }
 
         // Panel-specific keys
         match self.selection.focused_panel {
-            FocusPanel::Tree => {
+            FocusPanel::Tree => self.handle_tree_key(key),
+            FocusPanel::Radar => self.handle_radar_key(key),
+        }
+    }
+
+    fn handle_tree_key(&mut self, key: KeyEvent) {
+        match key.code {
+            // CRUD keys
+            KeyCode::Char('n') => self.start_new_session(),
+            KeyCode::Char('G') => self.start_new_group(),
+            KeyCode::Char('r') => self.start_rename(),
+            KeyCode::Char('m') => self.start_move_session(),
+            KeyCode::Char('d') => self.start_delete(),
+            KeyCode::Char('x') => self.kill_tmux_session(),
+            // Navigation / selection delegated to TreeState
+            _ => {
                 if let Some(action) = self.tree_state.handle_key(key, &self.tree) {
                     self.handle_tree_action(action);
                 }
             }
-            FocusPanel::Radar => match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.radar_state.move_cursor_next();
-                    if let Some(id) = self.radar_state.selected_session() {
-                        self.selection.selected =
-                            Some(SelectionTarget::Session(id.to_string()));
-                        self.refresh_cached_selected();
-                    }
+        }
+    }
+
+    fn handle_radar_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.radar_state.move_cursor_next();
+                if let Some(id) = self.radar_state.selected_session() {
+                    self.selection.selected =
+                        Some(SelectionTarget::Session(id.to_string()));
+                    self.refresh_cached_selected();
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.radar_state.move_cursor_prev();
-                    if let Some(id) = self.radar_state.selected_session() {
-                        self.selection.selected =
-                            Some(SelectionTarget::Session(id.to_string()));
-                        self.refresh_cached_selected();
-                    }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.radar_state.move_cursor_prev();
+                if let Some(id) = self.radar_state.selected_session() {
+                    self.selection.selected =
+                        Some(SelectionTarget::Session(id.to_string()));
+                    self.refresh_cached_selected();
                 }
-                KeyCode::Enter => {
-                    // Select on radar, then try to launch/resume tmux
-                    if let Some(id) = self.radar_state.selected_session().map(str::to_string) {
-                        self.selection.selected =
-                            Some(SelectionTarget::Session(id.clone()));
-                        self.refresh_cached_selected();
-                        self.try_launch_session(&id);
-                    }
+            }
+            KeyCode::Enter => {
+                if let Some(id) = self.radar_state.selected_session().map(str::to_string) {
+                    self.selection.selected =
+                        Some(SelectionTarget::Session(id.clone()));
+                    self.refresh_cached_selected();
+                    self.try_launch_session(&id);
                 }
-                _ => {}
-            },
+            }
+            _ => {}
         }
     }
 
@@ -219,39 +273,394 @@ impl App {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Text input handling
+    // -----------------------------------------------------------------------
+
+    fn handle_text_input_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+                self.input_context = None;
+            }
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+            }
+            KeyCode::Enter => {
+                let buffer = self.input_buffer.clone();
+                if buffer.trim().is_empty() {
+                    return;
+                }
+                self.process_text_input(buffer);
+            }
+            KeyCode::Char(c) => {
+                self.input_buffer.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn process_text_input(&mut self, buffer: String) {
+        let ctx = match self.input_context.take() {
+            Some(c) => c,
+            None => {
+                self.input_mode = InputMode::Normal;
+                return;
+            }
+        };
+
+        match ctx {
+            InputContext::NewSessionName => {
+                // Move to CWD step, prefilled with current dir
+                let default_cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.input_buffer = default_cwd;
+                self.input_context = Some(InputContext::NewSessionCwd { name: buffer });
+            }
+            InputContext::NewSessionCwd { name } => {
+                self.create_session(&name, &buffer);
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+            }
+            InputContext::RenameSession { session_id } => {
+                if let Err(e) = self.db.update_session_name(&session_id, &buffer) {
+                    self.status_message =
+                        Some((format!("rename failed: {e}"), Instant::now()));
+                }
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+                self.refresh_tree();
+            }
+            InputContext::RenameGroup { group_id } => {
+                if let Err(e) = self.db.rename_group(group_id, &buffer) {
+                    self.status_message =
+                        Some((format!("rename failed: {e}"), Instant::now()));
+                }
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+                self.refresh_tree();
+            }
+            InputContext::NewGroupName => {
+                match self.db.create_group(&buffer, "") {
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.status_message =
+                            Some((format!("create group failed: {e}"), Instant::now()));
+                    }
+                }
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+                self.refresh_tree();
+            }
+            _ => {
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Confirm handling
+    // -----------------------------------------------------------------------
+
+    fn handle_confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let ctx = self.input_context.take();
+                self.input_mode = InputMode::Normal;
+                if let Some(ctx) = ctx {
+                    self.process_confirm(ctx);
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.input_context = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn process_confirm(&mut self, ctx: InputContext) {
+        match ctx {
+            InputContext::ConfirmDeleteSession { session_id, tmux_name } => {
+                // Kill tmux if active
+                if let Some(ref name) = tmux_name {
+                    let _ = self.tmux.kill_session(name);
+                }
+                if let Err(e) = self.db.delete_session(&session_id) {
+                    self.status_message =
+                        Some((format!("delete failed: {e}"), Instant::now()));
+                }
+                self.refresh_tree();
+            }
+            InputContext::ConfirmDeleteGroup { group_id } => {
+                if let Err(e) = self.db.delete_group(group_id) {
+                    self.status_message =
+                        Some((format!("delete failed: {e}"), Instant::now()));
+                }
+                self.refresh_tree();
+            }
+            _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Group picker handling
+    // -----------------------------------------------------------------------
+
+    fn handle_group_picker_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.input_context = None;
+                self.picker_groups.clear();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.picker_groups.is_empty() {
+                    self.picker_cursor = (self.picker_cursor + 1) % self.picker_groups.len();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if !self.picker_groups.is_empty() {
+                    if self.picker_cursor == 0 {
+                        self.picker_cursor = self.picker_groups.len() - 1;
+                    } else {
+                        self.picker_cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some((gid, _)) = self.picker_groups.get(self.picker_cursor) {
+                    let gid = *gid;
+                    if let Some(InputContext::MoveSession { ref session_id }) = self.input_context {
+                        let sid = session_id.clone();
+                        if let Err(e) = self.db.move_session_to_group(&sid, gid) {
+                            self.status_message =
+                                Some((format!("move failed: {e}"), Instant::now()));
+                        }
+                    }
+                }
+                self.input_mode = InputMode::Normal;
+                self.input_context = None;
+                self.picker_groups.clear();
+                self.refresh_tree();
+            }
+            _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CRUD action starters
+    // -----------------------------------------------------------------------
+
+    fn start_new_session(&mut self) {
+        self.input_mode = InputMode::TextInput;
+        self.input_context = Some(InputContext::NewSessionName);
+        self.input_buffer.clear();
+    }
+
+    fn start_new_group(&mut self) {
+        self.input_mode = InputMode::TextInput;
+        self.input_context = Some(InputContext::NewGroupName);
+        self.input_buffer.clear();
+    }
+
+    fn start_rename(&mut self) {
+        let target = self.tree_state.selected_target(&self.tree);
+        match target {
+            Some(SelectionTarget::Session(id)) => {
+                let current_name = find_session_in_tree(&self.tree, &id)
+                    .map(|s| s.display_name.clone())
+                    .unwrap_or_default();
+                self.input_mode = InputMode::TextInput;
+                self.input_context = Some(InputContext::RenameSession { session_id: id });
+                self.input_buffer = current_name;
+            }
+            Some(SelectionTarget::Group(gid)) => {
+                let current_name = find_group_in_tree(&self.tree, gid)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_default();
+                self.input_mode = InputMode::TextInput;
+                self.input_context = Some(InputContext::RenameGroup { group_id: gid });
+                self.input_buffer = current_name;
+            }
+            None => {}
+        }
+    }
+
+    fn start_move_session(&mut self) {
+        let target = self.tree_state.selected_target(&self.tree);
+        if let Some(SelectionTarget::Session(id)) = target {
+            match self.db.get_all_groups() {
+                Ok(groups) if !groups.is_empty() => {
+                    self.picker_groups = groups;
+                    self.picker_cursor = 0;
+                    self.input_mode = InputMode::GroupPicker;
+                    self.input_context = Some(InputContext::MoveSession { session_id: id });
+                }
+                Ok(_) => {
+                    self.status_message =
+                        Some(("No groups available. Create one with G".to_string(), Instant::now()));
+                }
+                Err(e) => {
+                    self.status_message =
+                        Some((format!("failed to load groups: {e}"), Instant::now()));
+                }
+            }
+        }
+    }
+
+    fn start_delete(&mut self) {
+        let target = self.tree_state.selected_target(&self.tree);
+        match target {
+            Some(SelectionTarget::Session(id)) => {
+                let tmux_name = find_session_in_tree(&self.tree, &id)
+                    .and_then(|s| s.tmux_name.clone());
+                self.input_mode = InputMode::Confirm;
+                self.input_context = Some(InputContext::ConfirmDeleteSession {
+                    session_id: id,
+                    tmux_name,
+                });
+            }
+            Some(SelectionTarget::Group(gid)) => {
+                if gid == 0 {
+                    return; // can't delete Ungrouped
+                }
+                self.input_mode = InputMode::Confirm;
+                self.input_context = Some(InputContext::ConfirmDeleteGroup { group_id: gid });
+            }
+            None => {}
+        }
+    }
+
+    fn kill_tmux_session(&mut self) {
+        let target = self.tree_state.selected_target(&self.tree);
+        if let Some(SelectionTarget::Session(id)) = target {
+            if let Some(session) = find_session_in_tree(&self.tree, &id) {
+                if session.status == SessionStatus::Active {
+                    if let Some(ref tmux_name) = session.tmux_name {
+                        if let Err(e) = self.tmux.kill_session(tmux_name) {
+                            self.status_message =
+                                Some((format!("kill failed: {e}"), Instant::now()));
+                            return;
+                        }
+                    }
+                    let _ = self.db.update_session_status(&id, SessionStatus::Detached);
+                    self.refresh_tree();
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Session creation + launch
+    // -----------------------------------------------------------------------
+
+    fn create_session(&mut self, name: &str, cwd: &str) {
+        let tmux_name = sanitize_tmux_name(name);
+        match self.db.create_nexus_session(name, cwd, &tmux_name) {
+            Ok(_id) => {
+                if self.tmux_available {
+                    if let Err(e) = self.tmux.launch_claude_session(&tmux_name, cwd) {
+                        self.status_message =
+                            Some((format!("tmux launch failed: {e}"), Instant::now()));
+                    }
+                }
+                self.refresh_tree();
+            }
+            Err(e) => {
+                self.status_message =
+                    Some((format!("create failed: {e}"), Instant::now()));
+            }
+        }
+    }
+
     fn try_launch_session(&mut self, session_id: &str) {
         if !self.tmux_available {
             return;
         }
 
-        // Find the session's cwd (Todo 031: use find_session_in_tree directly)
-        let cwd = match find_session_in_tree(&self.tree, session_id)
-            .and_then(|s| s.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
-        {
+        let session = match find_session_in_tree(&self.tree, session_id) {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let cwd = match session.cwd.as_ref().map(|p| p.to_string_lossy().to_string()) {
             Some(c) => c,
             None => return,
         };
 
-        // Sanitize name for tmux (Todo 013: keep full ID, replace non-alnum with dash)
-        let tmux_name = sanitize_tmux_name(session_id);
+        let tmux_name = match session.tmux_name.as_ref() {
+            Some(n) => n.clone(),
+            None => sanitize_tmux_name(session_id),
+        };
 
-        // Check if already running -- compare against sanitized name (Todo 013)
-        let already_running = self
-            .tmux_windows
-            .iter()
-            .any(|w| w.session_id == tmux_name);
-
-        // Surface tmux errors instead of silently swallowing (Todo 023)
-        if already_running {
-            if let Err(e) = self.tmux.resume_session(&tmux_name) {
-                self.status_message = Some((format!("tmux resume failed: {e}"), Instant::now()));
+        match session.status {
+            SessionStatus::Active => {
+                // Attach to running session
+                if let Err(e) = self.tmux.resume_session(&tmux_name) {
+                    self.status_message =
+                        Some((format!("tmux resume failed: {e}"), Instant::now()));
+                }
             }
-        } else if let Err(e) = self.tmux.launch_session(&tmux_name, &cwd) {
-            self.status_message = Some((format!("tmux launch failed: {e}"), Instant::now()));
+            SessionStatus::Detached => {
+                // Re-launch claude in same cwd
+                if let Err(e) = self.tmux.launch_claude_session(&tmux_name, &cwd) {
+                    self.status_message =
+                        Some((format!("tmux launch failed: {e}"), Instant::now()));
+                    return;
+                }
+                let _ = self.db.update_session_status(session_id, SessionStatus::Active);
+                self.refresh_tree();
+            }
+            SessionStatus::Dead => {
+                // Dead sessions from scanner, not resumable
+                self.status_message = Some((
+                    "Dead session (not resumable). Only Nexus-created sessions can be resumed."
+                        .to_string(),
+                    Instant::now(),
+                ));
+            }
         }
     }
 
-    /// Refresh the cached selected session from current selection state.
+    // -----------------------------------------------------------------------
+    // tmux reconciliation
+    // -----------------------------------------------------------------------
+
+    fn reconcile_tmux_state(&mut self) {
+        let active_names: HashSet<&str> = self
+            .tmux_sessions
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+
+        let mut changed = false;
+        reconcile_recursive(&mut self.tree, &active_names, &self.db, &mut changed);
+
+        if changed {
+            self.tree_state.invalidate_cache();
+        }
+
+        self.cached_counts = count_sessions(&self.tree);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tree refresh
+    // -----------------------------------------------------------------------
+
+    pub(crate) fn refresh_tree(&mut self) {
+        if let Ok(tree) = self.db.get_visible_tree(self.show_dead_sessions) {
+            self.tree = tree;
+            self.tree_state.invalidate_cache();
+            self.radar_state.compute_blips(&self.tree);
+            self.cached_counts = count_sessions(&self.tree);
+            self.refresh_cached_selected();
+        }
+    }
+
     fn refresh_cached_selected(&mut self) {
         self.cached_selected = match self.selection.selected.as_ref() {
             Some(SelectionTarget::Session(id)) => {
@@ -261,16 +670,18 @@ impl App {
         };
     }
 
-    /// Get the currently selected session, if any. Uses cached value (Todo 015).
     pub(crate) fn selected_session(&self) -> Option<&SessionSummary> {
         self.cached_selected.as_ref()
     }
 
-    /// Count total and active sessions in the tree. Uses cached value (Todo 015).
     pub(crate) fn session_counts(&self) -> (usize, usize) {
         self.cached_counts
     }
 }
+
+// ---------------------------------------------------------------------------
+// Free helpers
+// ---------------------------------------------------------------------------
 
 fn find_session_in_tree<'a>(tree: &'a [TreeNode], session_id: &str) -> Option<&'a SessionSummary> {
     for node in tree {
@@ -284,6 +695,20 @@ fn find_session_in_tree<'a>(tree: &'a [TreeNode], session_id: &str) -> Option<&'
                 if let Some(s) = find_session_in_tree(&g.children, session_id) {
                     return Some(s);
                 }
+            }
+        }
+    }
+    None
+}
+
+fn find_group_in_tree(tree: &[TreeNode], group_id: GroupId) -> Option<&GroupNode> {
+    for node in tree {
+        if let TreeNode::Group(g) = node {
+            if g.id == group_id {
+                return Some(g);
+            }
+            if let Some(found) = find_group_in_tree(&g.children, group_id) {
+                return Some(found);
             }
         }
     }
@@ -311,28 +736,40 @@ fn count_sessions(tree: &[TreeNode]) -> (usize, usize) {
     (total, active)
 }
 
-/// Mark sessions as active based on tmux windows. Uses a HashSet for O(S+W) (Todo 018).
-fn mark_active_sessions(tree: &mut [TreeNode], windows: &[TmuxWindowInfo]) {
-    let active_ids: HashSet<&str> = windows.iter().map(|w| w.session_id.as_str()).collect();
-    mark_active_recursive(tree, &active_ids);
-}
-
-fn mark_active_recursive(tree: &mut [TreeNode], active_ids: &HashSet<&str>) {
+fn reconcile_recursive(
+    tree: &mut [TreeNode],
+    active_names: &HashSet<&str>,
+    db: &Database,
+    changed: &mut bool,
+) {
     for node in tree.iter_mut() {
         match node {
             TreeNode::Session(s) => {
-                s.is_active = active_ids.contains(s.session_id.as_str());
+                let tmux_name = s.tmux_name.as_deref().unwrap_or("");
+                let is_in_tmux = !tmux_name.is_empty() && active_names.contains(tmux_name);
+
+                if is_in_tmux && s.status != SessionStatus::Active {
+                    s.status = SessionStatus::Active;
+                    s.is_active = true;
+                    let _ = db.update_session_status(&s.session_id, SessionStatus::Active);
+                    *changed = true;
+                } else if !is_in_tmux && s.status == SessionStatus::Active {
+                    s.status = SessionStatus::Detached;
+                    s.is_active = false;
+                    let _ = db.update_session_status(&s.session_id, SessionStatus::Detached);
+                    *changed = true;
+                } else {
+                    s.is_active = is_in_tmux;
+                }
             }
             TreeNode::Group(g) => {
-                mark_active_recursive(&mut g.children, active_ids);
+                reconcile_recursive(&mut g.children, active_names, db, changed);
             }
         }
     }
 }
 
 /// Sanitize a string for use as a tmux session name.
-/// Replaces non-alphanumeric characters (except dash) with dashes.
-/// Does NOT truncate -- keeps full ID for reliable matching (Todo 013).
 fn sanitize_tmux_name(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
@@ -340,7 +777,7 @@ fn sanitize_tmux_name(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (Todo 028)
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -363,7 +800,7 @@ mod tests {
     fn test_sanitize_tmux_name_preserves_full_id() {
         let id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
         let sanitized = sanitize_tmux_name(id);
-        assert_eq!(sanitized, id); // UUIDs should pass through unchanged
+        assert_eq!(sanitized, id);
     }
 
     #[test]
@@ -382,46 +819,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_active_sessions_matching() {
-        use crate::mock;
-        let mut tree = mock::mock_tree();
-
-        // First, clear all active flags
-        clear_active(&mut tree);
-
-        let windows = vec![TmuxWindowInfo {
-            session_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string(),
-            window_name: "test".to_string(),
-            is_active: true,
-            status: TmuxSessionStatus::Running,
-        }];
-
-        mark_active_sessions(&mut tree, &windows);
-
-        let (_, active) = count_sessions(&tree);
-        assert_eq!(active, 1);
-    }
-
-    #[test]
-    fn test_mark_active_sessions_no_match() {
-        use crate::mock;
-        let mut tree = mock::mock_tree();
-        clear_active(&mut tree);
-
-        let windows = vec![TmuxWindowInfo {
-            session_id: "nonexistent-id".to_string(),
-            window_name: "test".to_string(),
-            is_active: true,
-            status: TmuxSessionStatus::Running,
-        }];
-
-        mark_active_sessions(&mut tree, &windows);
-
-        let (_, active) = count_sessions(&tree);
-        assert_eq!(active, 0);
-    }
-
-    #[test]
     fn test_find_session_in_tree() {
         use crate::mock;
         let tree = mock::mock_tree();
@@ -434,12 +831,33 @@ mod tests {
         assert!(not_found.is_none());
     }
 
-    fn clear_active(tree: &mut [TreeNode]) {
-        for node in tree {
-            match node {
-                TreeNode::Session(s) => s.is_active = false,
-                TreeNode::Group(g) => clear_active(&mut g.children),
-            }
-        }
+    #[test]
+    fn test_find_group_in_tree() {
+        use crate::mock;
+        let tree = mock::mock_tree();
+
+        let found = find_group_in_tree(&tree, 1);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "nexus");
+
+        let not_found = find_group_in_tree(&tree, 999);
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_reconcile_marks_detached() {
+        use crate::mock;
+        let mut tree = mock::mock_tree();
+        let db = Database::open_in_memory().unwrap();
+        let active_names: HashSet<&str> = HashSet::new(); // no tmux sessions
+        let mut changed = false;
+
+        reconcile_recursive(&mut tree, &active_names, &db, &mut changed);
+
+        // Sessions that were Active should now be Detached
+        let s = find_session_in_tree(&tree, "a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap();
+        assert_eq!(s.status, SessionStatus::Detached);
+        assert!(!s.is_active);
+        assert!(changed);
     }
 }

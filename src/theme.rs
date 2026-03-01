@@ -97,12 +97,6 @@ pub fn fx_boot() -> Vec<Effect> {
     ]
 }
 
-/// Backward-compatible alias for `fx_boot` — will be removed once app.rs
-/// is updated by Agent A to call `fx_boot()` directly.
-pub fn create_boot_effects() -> Vec<Effect> {
-    fx_boot()
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]

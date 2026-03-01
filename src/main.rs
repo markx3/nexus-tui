@@ -2,10 +2,8 @@ mod app;
 mod cli;
 pub(crate) mod config;
 pub(crate) mod db;
-pub(crate) mod grouping;
 #[cfg(test)]
 mod mock;
-pub(crate) mod scanner;
 mod text_utils;
 mod theme;
 mod time_utils;
@@ -34,8 +32,8 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
     let db = db::Database::open(&config.general.db_path)?;
 
     match command {
-        cli::Commands::List => {
-            let tree = db.get_tree()?;
+        cli::Commands::List { all } => {
+            let tree = db.get_visible_tree(all)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&tree)?);
             } else {
@@ -58,6 +56,30 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 }
             }
         }
+        cli::Commands::New { name, cwd, group } => {
+            let _lock = acquire_lock()?;
+            let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
+            let tmux_name = sanitize_tmux_name(&name);
+            let cwd = cwd.unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "/tmp".to_string())
+            });
+            let id = db.create_nexus_session(&name, &cwd, &tmux_name)?;
+
+            if let Some(group_name) = group {
+                let gid = match db.get_group_id_by_name(&group_name)? {
+                    Some(gid) => gid,
+                    None => db.create_group(&group_name, "")?,
+                };
+                db.assign_session_to_group(&id, gid)?;
+            }
+
+            if tmux.is_available() {
+                tmux.launch_claude_session(&tmux_name, &cwd)?;
+            }
+            println!("Created session '{}' ({})", name, id);
+        }
         cli::Commands::Launch { session_id } => {
             let _lock = acquire_lock()?;
             let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
@@ -68,30 +90,16 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 .get_session_cwd(&session_id)?
                 .ok_or_else(|| color_eyre::eyre::eyre!("Session '{}' has no cwd", session_id))?;
             let name = sanitize_tmux_name(&session_id);
-            tmux.launch_session(&name, &cwd)?;
+            tmux.launch_claude_session(&name, &cwd)?;
+            db.update_session_status(&session_id, types::SessionStatus::Active)?;
             println!("Launched session '{}'", session_id);
         }
         cli::Commands::Kill { session_name } => {
             let _lock = acquire_lock()?;
             let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
-            tmux.kill_window(&session_name)?;
+            tmux.kill_session(&session_name)?;
+            // Try to find and update DB status by tmux name
             println!("Killed session '{}'", session_name);
-        }
-        cli::Commands::Scan => {
-            let scan_result = scanner::scan_quick(&config.general.projects_dir)?;
-            db.upsert_sessions(&scan_result.sessions)?;
-            let tree = db.get_tree()?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&tree)?);
-            } else {
-                println!("Scanned {} sessions", scan_result.sessions.len());
-                if !scan_result.warnings.is_empty() {
-                    for w in &scan_result.warnings {
-                        eprintln!("  warn: {w}");
-                    }
-                }
-                print_tree(&tree, 0);
-            }
         }
         cli::Commands::Groups => {
             let tree = db.get_tree()?;
@@ -136,14 +144,7 @@ fn run_tui() -> Result<()> {
         }
     }
 
-    let scan_result = scanner::scan_quick(&config.general.projects_dir)?;
-    db.upsert_sessions(&scan_result.sessions)?;
-
-    if !config.auto_group.is_empty() {
-        grouping::apply_rules(&config.auto_group, &db)?;
-    }
-
-    let tree = db.get_tree()?;
+    let tree = db.get_visible_tree(false)?;
     let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
     let tmux_available = tmux.is_available();
     if tmux_available {
@@ -152,15 +153,15 @@ fn run_tui() -> Result<()> {
         }
     }
 
-    let tmux_windows = if tmux_available {
-        tmux.list_windows().unwrap_or_default()
+    let tmux_sessions = if tmux_available {
+        tmux.list_sessions().unwrap_or_default()
     } else {
         vec![]
     };
 
     let terminal = ratatui::init();
     let result =
-        app::App::new(config, tree, tmux, tmux_available, tmux_windows).run(terminal);
+        app::App::new(config, tree, tmux, tmux_available, tmux_sessions, db).run(terminal);
     ratatui::restore();
     result
 }
@@ -201,8 +202,12 @@ fn print_tree(tree: &[types::TreeNode], depth: usize) {
                 print_tree(&g.children, depth + 1);
             }
             types::TreeNode::Session(s) => {
-                let status = if s.is_active { "+" } else { "-" };
-                println!("{indent}{status} {} [{}]", s.display_name, s.last_active);
+                let status_icon = match s.status {
+                    types::SessionStatus::Active => "+",
+                    types::SessionStatus::Detached => "~",
+                    types::SessionStatus::Dead => "-",
+                };
+                println!("{indent}{status_icon} {} [{}]", s.display_name, s.last_active);
             }
         }
     }
@@ -211,20 +216,17 @@ fn print_tree(tree: &[types::TreeNode], depth: usize) {
 fn print_session_detail(s: &types::SessionSummary) {
     println!("Session: {}", s.session_id);
     println!("Name:    {}", s.display_name);
-    println!("Project: {}", s.project_dir);
     if let Some(ref cwd) = s.cwd {
         println!("CWD:     {}", cwd.display());
     }
-    if let Some(ref branch) = s.git_branch {
-        println!("Branch:  {}", branch);
+    println!("Status:  {}", s.status.as_str());
+    println!("Origin:  {}", s.created_by.as_str());
+    if let Some(ref tmux) = s.tmux_name {
+        println!("Tmux:    {}", tmux);
     }
-    if let Some(ref model) = s.model {
-        println!("Model:   {}", model);
-    }
-    println!("Messages: {}", s.message_count);
-    println!("Tokens:  {} in / {} out", s.input_tokens, s.output_tokens);
     println!("Active:  {}", s.is_active);
     println!("Last:    {}", s.last_active);
+    println!("Created: {}", s.created_at);
 }
 
 fn acquire_lock() -> Result<fslock::LockFile> {

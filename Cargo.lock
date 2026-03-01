@@ -972,6 +972,7 @@ dependencies = [
  "serde_json",
  "tachyonfx",
  "toml",
+ "uuid",
 ]
 
 [[package]]

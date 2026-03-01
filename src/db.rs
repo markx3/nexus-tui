@@ -4,8 +4,9 @@ use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 use rusqlite::{params, Connection};
 
-use crate::scanner::SessionInfo;
-use crate::types::{GroupIcon, GroupNode, SessionSummary, TreeNode};
+use crate::types::{
+    GroupIcon, GroupId, GroupNode, SessionOrigin, SessionStatus, SessionSummary, TreeNode,
+};
 
 // ---------------------------------------------------------------------------
 // Schema SQL
@@ -16,16 +17,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id    TEXT PRIMARY KEY,
     display_name  TEXT NOT NULL,
     cwd           TEXT,
-    project_dir   TEXT NOT NULL,
-    git_branch    TEXT,
-    model         TEXT,
-    first_message TEXT,
-    message_count INTEGER NOT NULL DEFAULT 0,
-    input_tokens  INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    subagent_count INTEGER NOT NULL DEFAULT 0,
     last_active   TEXT NOT NULL,
-    is_active     INTEGER NOT NULL DEFAULT 0
+    is_active     INTEGER NOT NULL DEFAULT 0,
+    tmux_name     TEXT,
+    status        TEXT NOT NULL DEFAULT 'dead',
+    created_by    TEXT NOT NULL DEFAULT 'scanner',
+    created_at    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -54,8 +51,6 @@ pub struct Database {
 
 impl Database {
     /// Open (or create) a database at the given file path.
-    ///
-    /// Creates parent directories if they don't exist.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -65,7 +60,6 @@ impl Database {
         let conn = Connection::open(path)
             .wrap_err_with(|| format!("cannot open database at {}", path.display()))?;
 
-        // Enable WAL mode for better concurrent read performance.
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
         let db = Self { conn };
@@ -74,9 +68,10 @@ impl Database {
     }
 
     /// Open an in-memory database (for tests).
+    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()
-            .wrap_err("cannot open in-memory database")?;
+        let conn =
+            Connection::open_in_memory().wrap_err("cannot open in-memory database")?;
 
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
@@ -97,45 +92,52 @@ impl Database {
     // Session CRUD
     // -----------------------------------------------------------------------
 
-    /// Insert or replace sessions from a scan result.
-    ///
-    /// Derives `display_name` from the first non-`None` of:
-    /// slug, git_branch, first_message (truncated to 60 chars), or session_id.
-    pub fn upsert_sessions(&self, sessions: &[SessionInfo]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+    /// Create a new Nexus-managed session and return its UUID.
+    pub fn create_nexus_session(
+        &self,
+        name: &str,
+        cwd: &str,
+        tmux_name: &str,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = crate::time_utils::epoch_to_iso(crate::time_utils::now_epoch());
 
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO sessions
-                    (session_id, display_name, cwd, project_dir, git_branch,
-                     model, first_message, message_count, input_tokens,
-                     output_tokens, subagent_count, last_active, is_active)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            )?;
+        self.conn.execute(
+            "INSERT INTO sessions
+                (session_id, display_name, cwd, last_active, is_active,
+                 tmux_name, status, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, 'active', 'nexus', ?6)",
+            params![id, name, cwd, now, tmux_name, now],
+        )?;
 
-            for s in sessions {
-                let display_name = derive_display_name(s);
-                let cwd_str = s.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
+        Ok(id)
+    }
 
-                stmt.execute(params![
-                    s.session_id,
-                    display_name,
-                    cwd_str,
-                    s.project_dir,
-                    s.git_branch,
-                    s.model,
-                    s.first_message,
-                    s.message_count,
-                    s.token_usage.input_tokens,
-                    s.token_usage.output_tokens,
-                    s.subagent_count,
-                    s.last_active,
-                    0i32, // is_active is set at runtime by mark_active_sessions()
-                ])?;
-            }
-        }
+    /// Update a session's status.
+    pub fn update_session_status(&self, session_id: &str, status: SessionStatus) -> Result<()> {
+        let is_active: i32 = if status == SessionStatus::Active { 1 } else { 0 };
+        self.conn.execute(
+            "UPDATE sessions SET status = ?1, is_active = ?2 WHERE session_id = ?3",
+            params![status.as_str(), is_active, session_id],
+        )?;
+        Ok(())
+    }
 
-        tx.commit()?;
+    /// Update a session's display name.
+    pub fn update_session_name(&self, session_id: &str, new_name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET display_name = ?1 WHERE session_id = ?2",
+            params![new_name, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a session entirely (cascades to session_groups).
+    pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM sessions WHERE session_id = ?1",
+            params![session_id],
+        )?;
         Ok(())
     }
 
@@ -169,6 +171,15 @@ impl Database {
         Ok(())
     }
 
+    /// Rename a group.
+    pub fn rename_group(&self, group_id: GroupId, new_name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE groups SET name = ?1 WHERE id = ?2",
+            params![new_name, group_id],
+        )?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Session <-> Group assignment
     // -----------------------------------------------------------------------
@@ -192,7 +203,15 @@ impl Database {
         Ok(())
     }
 
+    /// Move a session to a different group (remove old assignments, add new).
+    pub fn move_session_to_group(&self, session_id: &str, new_group_id: GroupId) -> Result<()> {
+        self.unassign_session(session_id)?;
+        self.assign_session_to_group(session_id, new_group_id)?;
+        Ok(())
+    }
+
     /// Return session_ids that are not assigned to any group.
+    #[cfg(test)]
     pub fn get_ungrouped_sessions(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT session_id FROM sessions
@@ -212,11 +231,10 @@ impl Database {
     // Tree building
     // -----------------------------------------------------------------------
 
-    /// Build the full tree of groups and sessions for the UI.
-    ///
-    /// Uses a single JOIN query to fetch all grouped sessions, avoiding
-    /// per-group N+1 queries. Ungrouped sessions are fetched separately.
-    pub fn get_tree(&self) -> Result<Vec<TreeNode>> {
+    /// Build the tree, optionally filtering out dead sessions.
+    pub fn get_visible_tree(&self, show_dead: bool) -> Result<Vec<TreeNode>> {
+        let status_filter = if show_dead { "" } else { "AND s.status != 'dead'" };
+
         // Fetch all groups
         let mut group_stmt = self.conn.prepare(
             "SELECT id, name, icon, sort_order FROM groups ORDER BY sort_order",
@@ -234,17 +252,17 @@ impl Database {
             .collect();
 
         // Fetch ALL grouped sessions in one query
-        let mut sess_stmt = self.conn.prepare(
-            "SELECT sg.group_id, s.session_id, s.display_name, s.cwd, s.project_dir,
-                    s.git_branch, s.model, s.first_message, s.message_count,
-                    s.input_tokens, s.output_tokens, s.subagent_count,
-                    s.last_active, s.is_active
+        let grouped_sql = format!(
+            "SELECT sg.group_id, s.session_id, s.display_name, s.cwd,
+                    s.last_active, s.is_active,
+                    s.tmux_name, s.status, s.created_by, s.created_at
              FROM sessions s
              JOIN session_groups sg ON s.session_id = sg.session_id
-             ORDER BY sg.group_id, s.last_active DESC",
-        )?;
+             WHERE 1=1 {status_filter}
+             ORDER BY sg.group_id, s.last_active DESC"
+        );
+        let mut sess_stmt = self.conn.prepare(&grouped_sql)?;
 
-        // Build a map: group_id -> Vec<TreeNode>
         let mut group_children: std::collections::HashMap<i64, Vec<TreeNode>> =
             std::collections::HashMap::new();
         sess_stmt
@@ -275,7 +293,7 @@ impl Database {
         }
 
         // Ungrouped sessions
-        let ungrouped = self.ungrouped_session_summaries()?;
+        let ungrouped = self.ungrouped_session_summaries(show_dead)?;
         if !ungrouped.is_empty() {
             tree.push(TreeNode::Group(GroupNode {
                 id: 0,
@@ -289,46 +307,48 @@ impl Database {
         Ok(tree)
     }
 
+    /// Build the full tree (all sessions including dead). Backward-compat wrapper.
+    pub fn get_tree(&self) -> Result<Vec<TreeNode>> {
+        self.get_visible_tree(true)
+    }
+
+    /// Return all groups as (id, name) pairs, for the group picker.
+    pub fn get_all_groups(&self) -> Result<Vec<(GroupId, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name FROM groups ORDER BY sort_order",
+        )?;
+        let groups = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, GroupId>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(groups)
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
     /// Fetch sessions not assigned to any group.
-    fn ungrouped_session_summaries(&self) -> Result<Vec<SessionSummary>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.session_id, s.display_name, s.cwd, s.project_dir,
-                    s.git_branch, s.model, s.first_message, s.message_count,
-                    s.input_tokens, s.output_tokens, s.subagent_count,
-                    s.last_active, s.is_active
+    fn ungrouped_session_summaries(&self, show_dead: bool) -> Result<Vec<SessionSummary>> {
+        let status_filter = if show_dead { "" } else { "AND s.status != 'dead'" };
+        let sql = format!(
+            "SELECT s.session_id, s.display_name, s.cwd,
+                    s.last_active, s.is_active,
+                    s.tmux_name, s.status, s.created_by, s.created_at
              FROM sessions s
              WHERE s.session_id NOT IN (SELECT session_id FROM session_groups)
-             ORDER BY s.last_active DESC",
-        )?;
+             {status_filter}
+             ORDER BY s.last_active DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let rows: Vec<SessionSummary> = stmt
             .query_map([], |row| Ok(row_to_summary(row)))?
             .filter_map(|r| r.ok())
             .collect();
 
-        Ok(rows)
-    }
-
-    /// Fetch all session cwds for ungrouped sessions.
-    pub fn get_ungrouped_session_cwds(&self) -> Result<Vec<(String, Option<String>)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.session_id, s.cwd FROM sessions s
-             WHERE s.session_id NOT IN (SELECT session_id FROM session_groups)
-             ORDER BY s.last_active DESC",
-        )?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
         Ok(rows)
     }
 
@@ -364,56 +384,28 @@ impl Database {
 // Free helpers
 // ---------------------------------------------------------------------------
 
-/// Map a rusqlite Row into a `SessionSummary`, reading 13 columns starting at column 0.
+/// Map a rusqlite Row into a `SessionSummary`, reading 9 columns starting at column 0.
 fn row_to_summary(row: &rusqlite::Row<'_>) -> SessionSummary {
     row_to_summary_at(row, 0)
 }
 
-/// Map a rusqlite Row into a `SessionSummary`, reading 13 columns starting at
-/// the given `start` offset. This allows reuse when the SELECT has prefix
-/// columns (e.g. a JOIN's group_id).
+/// Map a rusqlite Row into a `SessionSummary`, reading 9 columns starting at
+/// the given `start` offset.
 fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
     let cwd_str: Option<String> = row.get(start + 2).unwrap_or(None);
+    let status_str: String = row.get(start + 6).unwrap_or_default();
+    let created_by_str: String = row.get(start + 7).unwrap_or_default();
     SessionSummary {
         session_id: row.get(start).unwrap_or_default(),
         display_name: row.get(start + 1).unwrap_or_default(),
         cwd: cwd_str.map(std::path::PathBuf::from),
-        project_dir: row.get(start + 3).unwrap_or_default(),
-        git_branch: row.get(start + 4).unwrap_or(None),
-        model: row.get(start + 5).unwrap_or(None),
-        first_message: row.get(start + 6).unwrap_or(None),
-        message_count: row.get::<_, u32>(start + 7).unwrap_or(0),
-        input_tokens: row.get::<_, u64>(start + 8).unwrap_or(0),
-        output_tokens: row.get::<_, u64>(start + 9).unwrap_or(0),
-        subagent_count: row.get::<_, u16>(start + 10).unwrap_or(0),
-        last_active: row.get(start + 11).unwrap_or_default(),
-        is_active: row.get::<_, i32>(start + 12).unwrap_or(0) != 0,
+        last_active: row.get(start + 3).unwrap_or_default(),
+        is_active: row.get::<_, i32>(start + 4).unwrap_or(0) != 0,
+        tmux_name: row.get(start + 5).unwrap_or(None),
+        status: SessionStatus::from_str(&status_str),
+        created_by: SessionOrigin::from_str(&created_by_str),
+        created_at: row.get(start + 8).unwrap_or_default(),
     }
-}
-
-/// Derive a human-friendly display name from scanner data.
-///
-/// Priority: slug -> git_branch -> first_message (truncated to 60 chars) -> session_id.
-fn derive_display_name(s: &SessionInfo) -> String {
-    if let Some(slug) = &s.slug {
-        return slug.clone();
-    }
-    if let Some(branch) = &s.git_branch {
-        return branch.clone();
-    }
-    if let Some(msg) = &s.first_message {
-        let truncated = if msg.len() > 60 {
-            let mut end = 60;
-            while !msg.is_char_boundary(end) && end > 0 {
-                end -= 1;
-            }
-            format!("{}...", &msg[..end])
-        } else {
-            msg.clone()
-        };
-        return truncated;
-    }
-    s.session_id.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -423,68 +415,78 @@ fn derive_display_name(s: &SessionInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scanner::{SessionInfo, TokenUsage};
-    use std::path::PathBuf;
-
-    fn make_session(id: &str) -> SessionInfo {
-        SessionInfo {
-            session_id: id.to_string(),
-            slug: Some(format!("slug-{id}")),
-            cwd: Some(PathBuf::from(format!("/home/user/{id}"))),
-            project_dir: "test-project".to_string(),
-            git_branch: Some("main".to_string()),
-            model: Some("claude-opus-4-6".to_string()),
-            version: Some("2.1.50".to_string()),
-            first_message: Some("Hello world".to_string()),
-            message_count: 5,
-            token_usage: TokenUsage {
-                input_tokens: 100,
-                output_tokens: 50,
-            },
-            subagent_count: 2,
-            last_active: "2026-02-28T10:00:00Z".to_string(),
-            source_file: PathBuf::from("/tmp/test.jsonl"),
-            is_complete: true,
-        }
-    }
 
     #[test]
     fn test_init_schema_idempotent() {
         let db = Database::open_in_memory().unwrap();
-        // Calling init_schema again should not fail
         db.init_schema().unwrap();
         db.init_schema().unwrap();
     }
 
     #[test]
-    fn test_upsert_sessions() {
+    fn test_create_nexus_session() {
         let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_nexus_session("my-session", "/tmp/project", "my-session")
+            .unwrap();
+        assert!(!id.is_empty());
 
-        let sessions = vec![make_session("aaa"), make_session("bbb")];
-        db.upsert_sessions(&sessions).unwrap();
-
-        // Verify both are stored
-        let ungrouped = db.get_ungrouped_sessions().unwrap();
-        assert_eq!(ungrouped.len(), 2);
-        assert!(ungrouped.contains(&"aaa".to_string()));
-        assert!(ungrouped.contains(&"bbb".to_string()));
-    }
-
-    #[test]
-    fn test_upsert_replaces_existing() {
-        let db = Database::open_in_memory().unwrap();
-
-        let mut s = make_session("aaa");
-        s.message_count = 5;
-        db.upsert_sessions(&[s]).unwrap();
-
-        let mut s2 = make_session("aaa");
-        s2.message_count = 10;
-        db.upsert_sessions(&[s2]).unwrap();
-
-        // Should still be one session, not two
         let ungrouped = db.get_ungrouped_sessions().unwrap();
         assert_eq!(ungrouped.len(), 1);
+        assert_eq!(ungrouped[0], id);
+    }
+
+    #[test]
+    fn test_update_session_status() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_nexus_session("test", "/tmp", "test")
+            .unwrap();
+
+        // Starts as active
+        let tree = db.get_tree().unwrap();
+        let sess = find_session(&tree, &id).unwrap();
+        assert_eq!(sess.status, SessionStatus::Active);
+
+        // Mark detached
+        db.update_session_status(&id, SessionStatus::Detached).unwrap();
+        let tree = db.get_tree().unwrap();
+        let sess = find_session(&tree, &id).unwrap();
+        assert_eq!(sess.status, SessionStatus::Detached);
+        assert!(!sess.is_active);
+    }
+
+    #[test]
+    fn test_update_session_name() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_nexus_session("old-name", "/tmp", "test")
+            .unwrap();
+
+        db.update_session_name(&id, "new-name").unwrap();
+
+        let tree = db.get_tree().unwrap();
+        let sess = find_session(&tree, &id).unwrap();
+        assert_eq!(sess.display_name, "new-name");
+    }
+
+    #[test]
+    fn test_delete_session() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_nexus_session("doomed", "/tmp", "doomed")
+            .unwrap();
+
+        let gid = db.create_group("G", "").unwrap();
+        db.assign_session_to_group(&id, gid).unwrap();
+
+        db.delete_session(&id).unwrap();
+
+        let ungrouped = db.get_ungrouped_sessions().unwrap();
+        assert!(ungrouped.is_empty());
+
+        let tree = db.get_tree().unwrap();
+        assert!(find_session(&tree, &id).is_none());
     }
 
     #[test]
@@ -499,7 +501,6 @@ mod tests {
 
         db.delete_group(id).unwrap();
 
-        // After deletion, only "Personal" remains
         let gid = db.get_group_id_by_name("Work").unwrap();
         assert!(gid.is_none());
 
@@ -508,20 +509,58 @@ mod tests {
     }
 
     #[test]
+    fn test_rename_group() {
+        let db = Database::open_in_memory().unwrap();
+        let gid = db.create_group("Old", "").unwrap();
+        db.rename_group(gid, "New").unwrap();
+
+        assert!(db.get_group_id_by_name("Old").unwrap().is_none());
+        assert_eq!(db.get_group_id_by_name("New").unwrap(), Some(gid));
+    }
+
+    #[test]
+    fn test_move_session_to_group() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_nexus_session("test", "/tmp", "test")
+            .unwrap();
+        let g1 = db.create_group("G1", "").unwrap();
+        let g2 = db.create_group("G2", "").unwrap();
+
+        db.assign_session_to_group(&id, g1).unwrap();
+        db.move_session_to_group(&id, g2).unwrap();
+
+        let tree = db.get_tree().unwrap();
+        // Session should be in G2, not G1
+        for node in &tree {
+            if let TreeNode::Group(g) = node {
+                if g.id == g1 {
+                    assert!(g.children.is_empty());
+                }
+                if g.id == g2 {
+                    assert_eq!(g.children.len(), 1);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_assign_and_unassign_session() {
         let db = Database::open_in_memory().unwrap();
-
-        db.upsert_sessions(&[make_session("aaa"), make_session("bbb")]).unwrap();
+        let id1 = db
+            .create_nexus_session("aaa", "/tmp/a", "aaa")
+            .unwrap();
+        let id2 = db
+            .create_nexus_session("bbb", "/tmp/b", "bbb")
+            .unwrap();
         let gid = db.create_group("Work", "").unwrap();
 
-        // Assign aaa to Work
-        db.assign_session_to_group("aaa", gid).unwrap();
+        db.assign_session_to_group(&id1, gid).unwrap();
 
         let ungrouped = db.get_ungrouped_sessions().unwrap();
-        assert_eq!(ungrouped, vec!["bbb".to_string()]);
+        assert_eq!(ungrouped, vec![id2.clone()]);
 
-        // Unassign
-        db.unassign_session("aaa").unwrap();
+        db.unassign_session(&id1).unwrap();
         let ungrouped = db.get_ungrouped_sessions().unwrap();
         assert_eq!(ungrouped.len(), 2);
     }
@@ -529,13 +568,13 @@ mod tests {
     #[test]
     fn test_duplicate_assign_is_ignored() {
         let db = Database::open_in_memory().unwrap();
-
-        db.upsert_sessions(&[make_session("aaa")]).unwrap();
+        let id = db
+            .create_nexus_session("aaa", "/tmp", "aaa")
+            .unwrap();
         let gid = db.create_group("Work", "").unwrap();
 
-        db.assign_session_to_group("aaa", gid).unwrap();
-        // Assigning again should not fail (INSERT OR IGNORE)
-        db.assign_session_to_group("aaa", gid).unwrap();
+        db.assign_session_to_group(&id, gid).unwrap();
+        db.assign_session_to_group(&id, gid).unwrap();
 
         let ungrouped = db.get_ungrouped_sessions().unwrap();
         assert!(ungrouped.is_empty());
@@ -552,35 +591,26 @@ mod tests {
     fn test_get_tree_with_groups_and_ungrouped() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_sessions(&[
-            make_session("aaa"),
-            make_session("bbb"),
-            make_session("ccc"),
-        ])
-        .unwrap();
+        let id1 = db.create_nexus_session("aaa", "/tmp/a", "aaa").unwrap();
+        let _id2 = db.create_nexus_session("bbb", "/tmp/b", "bbb").unwrap();
+        let _id3 = db.create_nexus_session("ccc", "/tmp/c", "ccc").unwrap();
 
         let gid = db.create_group("Work", "briefcase").unwrap();
-        db.assign_session_to_group("aaa", gid).unwrap();
+        db.assign_session_to_group(&id1, gid).unwrap();
 
         let tree = db.get_tree().unwrap();
 
         // Should have 2 nodes: "Work" group + "Ungrouped"
         assert_eq!(tree.len(), 2);
 
-        // First node: Work group with aaa
         match &tree[0] {
             TreeNode::Group(g) => {
                 assert_eq!(g.name, "Work");
                 assert_eq!(g.children.len(), 1);
-                match &g.children[0] {
-                    TreeNode::Session(s) => assert_eq!(s.session_id, "aaa"),
-                    _ => panic!("Expected session node"),
-                }
             }
             _ => panic!("Expected group node"),
         }
 
-        // Second node: Ungrouped with bbb and ccc
         match &tree[1] {
             TreeNode::Group(g) => {
                 assert_eq!(g.name, "Ungrouped");
@@ -591,15 +621,35 @@ mod tests {
     }
 
     #[test]
+    fn test_get_visible_tree_filters_dead() {
+        let db = Database::open_in_memory().unwrap();
+
+        let _id1 = db.create_nexus_session("alive", "/tmp/a", "alive").unwrap();
+        let id2 = db.create_nexus_session("dead-one", "/tmp/b", "dead").unwrap();
+
+        db.update_session_status(&id2, SessionStatus::Dead).unwrap();
+
+        // show_dead=true should show both
+        let tree_all = db.get_visible_tree(true).unwrap();
+        let count_all = count_sessions(&tree_all);
+        assert_eq!(count_all, 2);
+
+        // show_dead=false should hide the dead one
+        let tree_live = db.get_visible_tree(false).unwrap();
+        let count_live = count_sessions(&tree_live);
+        assert_eq!(count_live, 1);
+    }
+
+    #[test]
     fn test_get_tree_no_ungrouped_when_all_assigned() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_sessions(&[make_session("aaa")]).unwrap();
+        let id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
         let gid = db.create_group("Work", "").unwrap();
-        db.assign_session_to_group("aaa", gid).unwrap();
+        db.assign_session_to_group(&id, gid).unwrap();
 
         let tree = db.get_tree().unwrap();
-        assert_eq!(tree.len(), 1); // Only Work group, no Ungrouped
+        assert_eq!(tree.len(), 1);
 
         match &tree[0] {
             TreeNode::Group(g) => {
@@ -611,48 +661,13 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_display_name_priority() {
-        // slug wins
-        let s = make_session("aaa");
-        assert_eq!(derive_display_name(&s), "slug-aaa");
-
-        // branch wins when no slug
-        let mut s = make_session("aaa");
-        s.slug = None;
-        assert_eq!(derive_display_name(&s), "main");
-
-        // first_message wins when no slug or branch
-        let mut s = make_session("aaa");
-        s.slug = None;
-        s.git_branch = None;
-        assert_eq!(derive_display_name(&s), "Hello world");
-
-        // session_id as fallback
-        let mut s = make_session("aaa");
-        s.slug = None;
-        s.git_branch = None;
-        s.first_message = None;
-        assert_eq!(derive_display_name(&s), "aaa");
-    }
-
-    #[test]
-    fn test_derive_display_name_truncation() {
-        let mut s = make_session("aaa");
-        s.slug = None;
-        s.git_branch = None;
-        s.first_message = Some("a".repeat(100));
-
-        let name = derive_display_name(&s);
-        assert!(name.len() <= 63); // 60 + "..."
-        assert!(name.ends_with("..."));
-    }
-
-    #[test]
     fn test_get_session_cwd() {
         let db = Database::open_in_memory().unwrap();
-        db.upsert_sessions(&[make_session("aaa")]).unwrap();
+        let id = db
+            .create_nexus_session("aaa", "/home/user/aaa", "aaa")
+            .unwrap();
 
-        let cwd = db.get_session_cwd("aaa").unwrap();
+        let cwd = db.get_session_cwd(&id).unwrap();
         assert_eq!(cwd, Some("/home/user/aaa".to_string()));
 
         let cwd_missing = db.get_session_cwd("nonexistent").unwrap();
@@ -663,20 +678,17 @@ mod tests {
     fn test_cascade_delete_group_removes_assignments() {
         let db = Database::open_in_memory().unwrap();
 
-        db.upsert_sessions(&[make_session("aaa")]).unwrap();
+        let id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
         let gid = db.create_group("Work", "").unwrap();
-        db.assign_session_to_group("aaa", gid).unwrap();
+        db.assign_session_to_group(&id, gid).unwrap();
 
-        // aaa is assigned
         let ungrouped = db.get_ungrouped_sessions().unwrap();
         assert!(ungrouped.is_empty());
 
-        // Delete the group
         db.delete_group(gid).unwrap();
 
-        // aaa should be ungrouped again
         let ungrouped = db.get_ungrouped_sessions().unwrap();
-        assert_eq!(ungrouped, vec!["aaa".to_string()]);
+        assert_eq!(ungrouped, vec![id]);
     }
 
     #[test]
@@ -687,8 +699,7 @@ mod tests {
         db.create_group("Alpha", "").unwrap();
         db.create_group("Bravo", "").unwrap();
 
-        // Groups should be ordered by sort_order (creation order), not name
-        db.upsert_sessions(&[make_session("aaa")]).unwrap();
+        let _id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
         let tree = db.get_tree().unwrap();
 
         // 3 empty named groups + 1 Ungrouped
@@ -702,5 +713,44 @@ mod tests {
             })
             .collect();
         assert_eq!(names, vec!["Charlie", "Alpha", "Bravo", "Ungrouped"]);
+    }
+
+    #[test]
+    fn test_get_all_groups() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_group("A", "").unwrap();
+        db.create_group("B", "").unwrap();
+
+        let groups = db.get_all_groups().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].1, "A");
+        assert_eq!(groups[1].1, "B");
+    }
+
+    // Test helpers
+    fn find_session<'a>(tree: &'a [TreeNode], id: &str) -> Option<&'a SessionSummary> {
+        for node in tree {
+            match node {
+                TreeNode::Session(s) if s.session_id == id => return Some(s),
+                TreeNode::Group(g) => {
+                    if let Some(s) = find_session(&g.children, id) {
+                        return Some(s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn count_sessions(tree: &[TreeNode]) -> usize {
+        let mut count = 0;
+        for node in tree {
+            match node {
+                TreeNode::Session(_) => count += 1,
+                TreeNode::Group(g) => count += count_sessions(&g.children),
+            }
+        }
+        count
     }
 }

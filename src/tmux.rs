@@ -3,7 +3,7 @@ use std::process::Command;
 use color_eyre::eyre::{bail, WrapErr};
 use color_eyre::Result;
 
-use crate::types::{TmuxSessionStatus, TmuxWindowInfo};
+use crate::types::{TmuxSessionInfo, TmuxSessionStatus};
 
 // ---------------------------------------------------------------------------
 // TmuxManager
@@ -29,17 +29,17 @@ impl TmuxManager {
             .unwrap_or(false)
     }
 
-    /// Launch a new detached tmux session on the nexus socket.
-    pub fn launch_session(&self, name: &str, cwd: &str) -> Result<()> {
+    /// Launch a new detached tmux session that runs `claude` immediately.
+    pub fn launch_claude_session(&self, name: &str, cwd: &str) -> Result<()> {
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
-            .args(["new-session", "-d", "-s", name, "-c", cwd])
+            .args(["new-session", "-d", "-s", name, "-c", cwd, "claude"])
             .status()
             .wrap_err("failed to run tmux new-session")?;
 
         if !status.success() {
             bail!(
-                "tmux new-session exited with status {} for session '{}'",
+                "tmux new-session (claude) exited with status {} for session '{}'",
                 status,
                 name
             );
@@ -77,13 +77,13 @@ impl TmuxManager {
         Ok(())
     }
 
-    /// List windows/sessions on the nexus socket.
+    /// List sessions on the nexus socket.
     ///
     /// Parses the output of:
     /// ```text
     /// tmux -L nexus list-sessions -F '#{session_name}:#{window_name}:#{session_attached}:#{pane_current_command}'
     /// ```
-    pub fn list_windows(&self) -> Result<Vec<TmuxWindowInfo>> {
+    pub fn list_sessions(&self) -> Result<Vec<TmuxSessionInfo>> {
         let output = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args([
@@ -104,7 +104,7 @@ impl TmuxManager {
     }
 
     /// Kill a session by name on the nexus socket.
-    pub fn kill_window(&self, name: &str) -> Result<()> {
+    pub fn kill_session(&self, name: &str) -> Result<()> {
         let status = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["kill-session", "-t", name])
@@ -153,7 +153,7 @@ impl TmuxManager {
 ///
 /// - `session_attached > 0` -> `is_active = true`
 /// - `pane_current_command` non-empty -> `Running`, otherwise `Idle`
-fn parse_list_sessions_output(output: &str) -> Vec<TmuxWindowInfo> {
+fn parse_list_sessions_output(output: &str) -> Vec<TmuxSessionInfo> {
     output
         .lines()
         .filter(|line| !line.is_empty())
@@ -161,7 +161,7 @@ fn parse_list_sessions_output(output: &str) -> Vec<TmuxWindowInfo> {
         .collect()
 }
 
-fn parse_session_line(line: &str) -> Option<TmuxWindowInfo> {
+fn parse_session_line(line: &str) -> Option<TmuxSessionInfo> {
     // Split on ':', expecting at least 4 fields.
     // Session names and commands could theoretically contain colons,
     // so we split into at most 4 parts.
@@ -181,7 +181,7 @@ fn parse_session_line(line: &str) -> Option<TmuxWindowInfo> {
         TmuxSessionStatus::Running
     };
 
-    Some(TmuxWindowInfo {
+    Some(TmuxSessionInfo {
         session_id: session_name,
         window_name,
         is_active,
@@ -290,23 +290,23 @@ session-c:win3:0:\n";
     fn test_launch_and_kill_session() {
         let mgr = TmuxManager::new("nexus-test-lk");
 
-        // Launch
-        mgr.launch_session("test-sess", "/tmp").unwrap();
+        // Launch claude session
+        mgr.launch_claude_session("test-sess", "/tmp").unwrap();
 
         // Verify it appears in list
-        let windows = mgr.list_windows().unwrap();
+        let sessions = mgr.list_sessions().unwrap();
         assert!(
-            windows.iter().any(|w| w.session_id == "test-sess"),
+            sessions.iter().any(|s| s.session_id == "test-sess"),
             "session should appear in list"
         );
 
         // Kill
-        mgr.kill_window("test-sess").unwrap();
+        mgr.kill_session("test-sess").unwrap();
 
         // Verify it's gone
-        let windows = mgr.list_windows().unwrap();
+        let sessions = mgr.list_sessions().unwrap();
         assert!(
-            !windows.iter().any(|w| w.session_id == "test-sess"),
+            !sessions.iter().any(|s| s.session_id == "test-sess"),
             "session should be removed"
         );
     }
@@ -317,8 +317,8 @@ session-c:win3:0:\n";
         let mgr = TmuxManager::new("nexus-test-kb");
 
         // Need at least one session for bind-key to work
-        mgr.launch_session("kb-test", "/tmp").unwrap();
+        mgr.launch_claude_session("kb-test", "/tmp").unwrap();
         mgr.setup_keybindings().unwrap();
-        mgr.kill_window("kb-test").unwrap();
+        mgr.kill_session("kb-test").unwrap();
     }
 }

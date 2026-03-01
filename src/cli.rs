@@ -14,13 +14,28 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// List all sessions
-    List,
+    List {
+        /// Include dead/past sessions
+        #[arg(long)]
+        all: bool,
+    },
     /// Show details for a specific session
     Show {
         /// Session ID (or prefix)
         session_id: String,
     },
-    /// Launch a session in tmux
+    /// Create a new session
+    New {
+        /// Session name
+        name: String,
+        /// Working directory (defaults to current dir)
+        #[arg(short, long)]
+        cwd: Option<String>,
+        /// Assign to group (created if it doesn't exist)
+        #[arg(short, long)]
+        group: Option<String>,
+    },
+    /// Launch/resume a session in tmux
     Launch {
         /// Session ID
         session_id: String,
@@ -30,8 +45,6 @@ pub enum Commands {
         /// Session name in tmux
         session_name: String,
     },
-    /// Scan for Claude Code sessions
-    Scan,
     /// List configured groups
     Groups,
 }

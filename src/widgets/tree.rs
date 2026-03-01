@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::theme;
 use crate::time_utils;
-use crate::types::{GroupIcon, PanelType, ThemeElement, TreeNode};
+use crate::types::{GroupIcon, PanelType, SessionStatus, ThemeElement, TreeNode};
 use crate::widgets::tree_state::{FlatNodeKind, TreeState};
 
 // ---------------------------------------------------------------------------
@@ -17,18 +17,18 @@ const ICON_ROOT: &str = "\u{25C8}";     // ◈
 const ICON_SUBGROUP: &str = "\u{2B21}"; // ⬡
 const ICON_COLLAPSED: &str = "\u{25B6}"; // ▶
 const ICON_ACTIVE: &str = "\u{25CF}";   // ●
-const ICON_INACTIVE: &str = "\u{25CB}"; // ○
+const ICON_DETACHED: &str = "\u{25CB}"; // ○
+const ICON_DEAD: &str = "\u{25CC}";     // ◌
 
 // ---------------------------------------------------------------------------
 // Tree renderer
 // ---------------------------------------------------------------------------
 
-/// Render the session tree widget.
 pub fn render_tree(
     frame: &mut Frame,
     area: Rect,
     tree: &[TreeNode],
-    state: &TreeState,
+    state: &mut TreeState,
     focused: bool,
 ) {
     let title_style = if focused {
@@ -53,26 +53,40 @@ pub fn render_tree(
 
     let flat = state.visible_nodes(tree);
     if flat.is_empty() {
-        let empty = Paragraph::new("No sessions loaded")
+        let empty = Paragraph::new("No sessions. Press 'n' to create one.")
             .style(Style::new().fg(theme::DIM));
         frame.render_widget(empty, inner);
         return;
     }
 
-    // Determine visible range based on scroll offset
+    // Ensure cursor is within viewport
     let viewport_h = inner.height as usize;
+    state.ensure_cursor_visible(viewport_h);
+
     let start = state.scroll_offset;
     let end = (start + viewport_h).min(flat.len());
 
-    // Pre-computed indent strings to avoid per-frame allocations (Todo 026)
     const INDENTS: [&str; 8] = [
         "", "  ", "    ", "      ", "        ", "          ", "            ", "              ",
     ];
 
     let mut lines: Vec<Line> = Vec::with_capacity(viewport_h);
 
-    for (vis_idx, flat_idx) in (start..end).enumerate() {
-        let node = &flat[flat_idx];
+    // Scroll-up indicator
+    if start > 0 {
+        lines.push(Line::from(Span::styled(
+            "  \u{25B2} more above",
+            Style::new().fg(theme::DIM),
+        )));
+    }
+
+    let content_start = if start > 0 { 1 } else { 0 };
+    let content_end_budget = if end < flat.len() { 1 } else { 0 };
+    let content_slots = viewport_h.saturating_sub(content_start + content_end_budget);
+
+    let actual_end = (start + content_start + content_slots).min(flat.len());
+
+    for (flat_idx, node) in flat.iter().enumerate().take(actual_end).skip(start + content_start) {
         let indent = INDENTS.get(node.depth as usize).unwrap_or(&INDENTS[INDENTS.len() - 1]);
         let is_selected = flat_idx == state.cursor_index;
 
@@ -94,13 +108,7 @@ pub fn render_tree(
                 };
 
                 let icon_color = theme::NEON_CYAN;
-
-                let text_color = if is_selected {
-                    theme::TEXT
-                } else {
-                    theme::DIM
-                };
-
+                let text_color = if is_selected { theme::TEXT } else { theme::DIM };
                 let count_str = format!(" ({})", child_count);
 
                 Line::from(vec![
@@ -111,24 +119,21 @@ pub fn render_tree(
                 ])
             }
             FlatNodeKind::Session { summary } => {
-                let icon_str = if summary.is_active {
-                    ICON_ACTIVE
-                } else {
-                    ICON_INACTIVE
-                };
-
-                let (icon_color, name_color) = if summary.is_active {
-                    (theme::ACID_GREEN, theme::ACID_GREEN)
-                } else if time_utils::is_stale(&summary.last_active, 7 * 86400) {
-                    (theme::DIM, theme::DIM)
-                } else {
-                    (theme::TEXT, theme::TEXT)
+                let (icon_str, icon_color, name_color) = match summary.status {
+                    SessionStatus::Active => (ICON_ACTIVE, theme::ACID_GREEN, theme::ACID_GREEN),
+                    SessionStatus::Detached => {
+                        if time_utils::is_stale(&summary.last_active, 7 * 86400) {
+                            (ICON_DETACHED, theme::DIM, theme::DIM)
+                        } else {
+                            (ICON_DETACHED, theme::TEXT, theme::TEXT)
+                        }
+                    }
+                    SessionStatus::Dead => (ICON_DEAD, theme::DIM, theme::DIM),
                 };
 
                 let rel_time = time_utils::relative_time(&summary.last_active);
-                let time_color = theme::DIM;
 
-                Line::from(vec![
+                let mut spans = vec![
                     Span::raw(*indent),
                     Span::styled(icon_str, Style::new().fg(icon_color)),
                     Span::styled(
@@ -137,9 +142,24 @@ pub fn render_tree(
                     ),
                     Span::styled(
                         format!("  {}", rel_time),
-                        Style::new().fg(time_color),
+                        Style::new().fg(theme::DIM),
                     ),
-                ])
+                ];
+
+                // Show status tag for non-active
+                if summary.status == SessionStatus::Detached {
+                    spans.push(Span::styled(
+                        " [detached]",
+                        Style::new().fg(theme::DIM).add_modifier(Modifier::DIM),
+                    ));
+                } else if summary.status == SessionStatus::Dead {
+                    spans.push(Span::styled(
+                        " [dead]",
+                        Style::new().fg(theme::DIM).add_modifier(Modifier::DIM),
+                    ));
+                }
+
+                Line::from(spans)
             }
         };
 
@@ -161,11 +181,14 @@ pub fn render_tree(
         };
 
         lines.push(line);
+    }
 
-        // Early exit if we've filled the viewport
-        if vis_idx + 1 >= viewport_h {
-            break;
-        }
+    // Scroll-down indicator
+    if end < flat.len() {
+        lines.push(Line::from(Span::styled(
+            "  \u{25BC} more below",
+            Style::new().fg(theme::DIM),
+        )));
     }
 
     let paragraph = Paragraph::new(lines);
@@ -189,12 +212,12 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let tree = mock::mock_tree();
-        let state = TreeState::new(&tree);
+        let mut state = TreeState::new(&tree);
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &state, true);
+                render_tree(frame, area, &tree, &mut state, true);
             })
             .unwrap();
     }
@@ -208,12 +231,12 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let tree = mock::mock_tree();
-        let state = TreeState::new(&tree);
+        let mut state = TreeState::new(&tree);
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &state, false);
+                render_tree(frame, area, &tree, &mut state, false);
             })
             .unwrap();
     }
@@ -226,12 +249,12 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let tree: Vec<TreeNode> = vec![];
-        let state = TreeState::new(&tree);
+        let mut state = TreeState::new(&tree);
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &state, true);
+                render_tree(frame, area, &tree, &mut state, true);
             })
             .unwrap();
     }
@@ -245,14 +268,13 @@ mod tests {
         let backend = TestBackend::new(5, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         let tree = mock::mock_tree();
-        let state = TreeState::new(&tree);
+        let mut state = TreeState::new(&tree);
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &state, true);
+                render_tree(frame, area, &tree, &mut state, true);
             })
             .unwrap();
     }
-
 }

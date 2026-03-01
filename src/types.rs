@@ -37,6 +37,7 @@ pub struct GroupNode {
     pub icon: GroupIcon,
     pub children: Vec<TreeNode>,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub collapsed: bool,
 }
 
@@ -46,21 +47,84 @@ pub enum TreeNode {
     Session(SessionSummary),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum SessionStatus {
+    Active,
+    Detached,
+    Dead,
+}
+
+impl SessionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SessionStatus::Active => "active",
+            SessionStatus::Detached => "detached",
+            SessionStatus::Dead => "dead",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "active" => SessionStatus::Active,
+            "detached" => SessionStatus::Detached,
+            _ => SessionStatus::Dead,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum SessionOrigin {
+    Nexus,
+    Scanner,
+}
+
+impl SessionOrigin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SessionOrigin::Nexus => "nexus",
+            SessionOrigin::Scanner => "scanner",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "nexus" => SessionOrigin::Nexus,
+            _ => SessionOrigin::Scanner,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    TextInput,
+    Confirm,
+    GroupPicker,
+}
+
+#[derive(Debug, Clone)]
+pub enum InputContext {
+    NewSessionName,
+    NewSessionCwd { name: String },
+    RenameSession { session_id: String },
+    RenameGroup { group_id: GroupId },
+    NewGroupName,
+    ConfirmDeleteSession { session_id: String, tmux_name: Option<String> },
+    ConfirmDeleteGroup { group_id: GroupId },
+    MoveSession { session_id: String },
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionSummary {
     pub session_id: SessionId,
     pub display_name: String,
     pub cwd: Option<PathBuf>,
-    pub project_dir: String,
-    pub git_branch: Option<String>,
-    pub model: Option<String>,
-    pub first_message: Option<String>,
-    pub message_count: u32,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub subagent_count: u16,
     pub last_active: String,
     pub is_active: bool,
+    pub status: SessionStatus,
+    pub tmux_name: Option<String>,
+    pub created_by: SessionOrigin,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -70,7 +134,7 @@ pub enum GroupIcon {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct TmuxWindowInfo {
+pub struct TmuxSessionInfo {
     pub session_id: SessionId,
     pub window_name: String,
     pub is_active: bool,
@@ -84,6 +148,7 @@ pub enum TmuxSessionStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub enum ThemeElement {
     Background,
     Surface,

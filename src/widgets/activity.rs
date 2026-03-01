@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::theme;
-use crate::types::{PanelType, ThemeElement, TmuxSessionStatus, TmuxWindowInfo};
+use crate::types::{PanelType, ThemeElement, TmuxSessionStatus, TmuxSessionInfo};
 
 /// Block characters used for the activity gauge, ordered by fill level.
 const GAUGE_CHARS: [char; 8] = ['\u{258f}', '\u{258e}', '\u{258d}', '\u{258c}', '\u{258b}', '\u{258a}', '\u{2589}', '\u{2588}'];
@@ -15,14 +15,14 @@ const GAUGE_WIDTH: usize = 8;
 
 /// Render the activity strip showing tmux session gauges.
 ///
-/// For each `TmuxWindowInfo`:
+/// For each session:
 /// - Running sessions get a full gauge in ACID_GREEN
 /// - Idle sessions get a partial gauge in DIM
 /// - If no windows, show a placeholder message
 pub fn render_activity_strip(
     frame: &mut Frame,
     area: Rect,
-    windows: &[TmuxWindowInfo],
+    windows: &[TmuxSessionInfo],
 ) {
     let block = Block::default()
         .title(Span::styled(
@@ -105,7 +105,7 @@ mod tests {
     fn render_activity_strip_with_windows() {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let windows = mock::mock_tmux_windows();
+        let windows = mock::mock_tmux_sessions();
         terminal
             .draw(|frame| {
                 let area = frame.area();

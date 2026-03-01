@@ -1,4 +1,0 @@
-{"type":"progress","sessionId":"syn-test-001","cwd":"/Users/test/syn","gitBranch":"main","version":"2.1.50","timestamp":"2026-02-28T18:00:00Z"}
-{"type":"user","sessionId":"syn-test-001","message":{"role":"user","content":"Hello"},"timestamp":"2026-02-28T18:00:01Z"}
-{"type":"assistant","sessionId":"syn-test-001","message":{"model":"claude-opus-4-6","role":"assistant","content":[{"type":"text","text":"Hi"}],"usage":{"input_tokens":10,"output_tokens":5}},"timestamp":"2026-02-28T18:00:02Z"}
-{"type":"assistant","sessionId":"syn-test-001","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"..."}],"usage":{"input_tokens":0,"output_tokens":0}},"timestamp":"2026-02-28T18:00:03Z"}

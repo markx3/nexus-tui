@@ -1,3 +1,0 @@
-{"type":"progress","sessionId":"aaa-bbb-ccc","cwd":"/Users/test/Code/myproject","gitBranch":"main","version":"2.1.50","timestamp":"2026-02-28T10:00:00Z"}
-{"type":"user","sessionId":"aaa-bbb-ccc","cwd":"/Users/test/Code/myproject","gitBranch":"main","version":"2.1.50","message":{"role":"user","content":"Hello, help me with this code"},"timestamp":"2026-02-28T10:00:01Z"}
-{"type":"assistant","sessionId":"aaa-bbb-ccc","slug":"happy-coding-fox","message":{"model":"claude-opus-4-6","role":"assistant","content":[{"type":"text","text":"Sure!"}],"usage":{"input_tokens":100,"output_tokens":50}},"timestamp":"2026-02-28T10:00:02Z"}
