@@ -20,6 +20,7 @@ use crate::widgets::tree_state::{TreeAction, TreeState};
 
 const TICK_RATE: Duration = Duration::from_millis(16);
 const TMUX_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const LOGO_FRAME_INTERVAL: Duration = Duration::from_millis(300);
 
 pub struct App {
     pub should_quit: bool,
@@ -54,6 +55,9 @@ pub struct App {
     needs_full_redraw: bool,
     // Session interactor state (None if tmux unavailable)
     pub(crate) interactor_state: Option<InteractorState>,
+    // Logo animation state
+    pub(crate) logo_frame: usize,
+    logo_last_advance: Instant,
 }
 
 impl App {
@@ -103,6 +107,8 @@ impl App {
             picker_cursor: 0,
             needs_full_redraw: false,
             interactor_state,
+            logo_frame: 0,
+            logo_last_advance: Instant::now(),
         }
     }
 
@@ -133,6 +139,12 @@ impl App {
                 self.tmux_sessions = self.tmux.list_sessions().unwrap_or_default();
                 self.reconcile_tmux_state();
                 self.last_tmux_poll = now;
+            }
+
+            // Advance logo animation frame
+            if now.duration_since(self.logo_last_advance) >= LOGO_FRAME_INTERVAL {
+                self.logo_frame = self.logo_frame.wrapping_add(1);
+                self.logo_last_advance = now;
             }
 
             // Auto-clear status message after 5 seconds

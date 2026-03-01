@@ -219,6 +219,8 @@ pub enum ThemeElement {
     InteractorTitle,
     ConversationHuman,
     ConversationAssistant,
+    LogoAgent,
+    LogoNexus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -227,4 +229,5 @@ pub enum PanelType {
     SessionTree,
     SessionInteractor,
     Detail,
+    Logo,
 }

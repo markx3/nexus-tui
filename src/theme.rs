@@ -52,6 +52,8 @@ pub fn style_for(element: ThemeElement) -> Style {
         ThemeElement::InteractorTitle => Style::new().fg(NEON_CYAN).add_modifier(Modifier::BOLD),
         ThemeElement::ConversationHuman => Style::new().fg(NEON_CYAN),
         ThemeElement::ConversationAssistant => Style::new().fg(ACID_GREEN),
+        ThemeElement::LogoAgent => Style::new().fg(DIM),
+        ThemeElement::LogoNexus => Style::new().fg(NEON_CYAN),
     }
 }
 
@@ -64,6 +66,7 @@ pub fn border_for(panel: PanelType) -> BorderSet<'static> {
         PanelType::SessionTree => ratatui::symbols::border::PLAIN,
         PanelType::SessionInteractor => ratatui::symbols::border::PLAIN,
         PanelType::Detail => ratatui::symbols::border::PLAIN,
+        PanelType::Logo => ratatui::symbols::border::PLAIN,
     }
 }
 
@@ -121,6 +124,8 @@ mod tests {
             ThemeElement::InteractorTitle,
             ThemeElement::ConversationHuman,
             ThemeElement::ConversationAssistant,
+            ThemeElement::LogoAgent,
+            ThemeElement::LogoNexus,
         ];
 
         let default_style = Style::default();
@@ -140,6 +145,7 @@ mod tests {
             PanelType::SessionTree,
             PanelType::SessionInteractor,
             PanelType::Detail,
+            PanelType::Logo,
         ];
 
         for panel in &panels {

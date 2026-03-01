@@ -50,17 +50,33 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     ])
     .areas(right_column);
 
+    // Split left panel: tree + optional logo
+    let (tree_area, logo_area) = if left_panel.height >= 20 {
+        let [tree, logo] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(9),
+        ])
+        .areas(left_panel);
+        (tree, Some(logo))
+    } else {
+        (left_panel, None)
+    };
+
     // Render each zone
     let (session_count, active_count) = app.session_counts();
     widgets::top_bar::render_top_bar(frame, top_bar, session_count, active_count);
 
     widgets::tree::render_tree(
         frame,
-        left_panel,
+        tree_area,
         &app.tree,
         &mut app.tree_state,
         true, // tree is always "focused" now (no focus switching)
     );
+
+    if let Some(logo_area) = logo_area {
+        widgets::logo::render_logo(frame, logo_area, app.logo_frame);
+    }
 
     // Render the session interactor
     let interactor_content = app.interactor_state.as_ref().and_then(|is| is.current_content.as_ref());
@@ -85,16 +101,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     let selected_session = app.selected_session();
     widgets::detail::render_detail(frame, detail_area, selected_session, false);
 
-    // Input prompt overlay (renders at bottom of tree panel area)
+    // Input prompt overlay (renders at bottom of tree area, above logo)
     match app.input_mode {
         InputMode::TextInput => {
-            render_text_input(frame, left_panel, app);
+            render_text_input(frame, tree_area, app);
         }
         InputMode::Confirm => {
-            render_confirm(frame, left_panel, app);
+            render_confirm(frame, tree_area, app);
         }
         InputMode::GroupPicker => {
-            render_group_picker(frame, left_panel, app);
+            render_group_picker(frame, tree_area, app);
         }
         InputMode::Normal => {}
     }
