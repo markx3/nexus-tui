@@ -43,10 +43,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     ])
     .areas(main_area);
 
-    // Right column: interactor (~83%) + detail (~17%)
+    // Right column: interactor (fill) + detail (fixed, matches logo panel height)
     let [interactor_area, detail_area] = Layout::vertical([
-        Constraint::Percentage(83),
-        Constraint::Percentage(17),
+        Constraint::Fill(1),
+        Constraint::Length(9),
     ])
     .areas(right_column);
 
