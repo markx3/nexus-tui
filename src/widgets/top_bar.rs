@@ -59,7 +59,7 @@ pub fn render_top_bar(
     let inner = Block::default().borders(Borders::ALL).inner(area);
     let preceding_width: usize = status.spans[..status.spans.len() - 1]
         .iter()
-        .map(|s| s.content.len())
+        .map(|s| s.width())
         .sum();
     let theme_rect = Rect {
         x: inner.x + preceding_width as u16,
