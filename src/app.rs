@@ -19,6 +19,7 @@ use crate::theme;
 use crate::tmux::{sanitize_tmux_name, TmuxManager};
 use crate::types::*;
 use crate::ui;
+use crate::widgets::finder_state::FinderState;
 use crate::widgets::interactor_state::InteractorState;
 use crate::widgets::logo::LogoState;
 use crate::widgets::tree_state::{FlatNodeKind, TreeAction, TreeState};
@@ -95,6 +96,8 @@ pub struct App {
     // Layout rects for mouse hit-testing (populated during draw)
     pub(crate) area_tree: Rect,
     pub(crate) area_theme_label: Rect,
+    // Session finder state
+    pub(crate) finder_state: FinderState,
 }
 
 impl App {
@@ -168,6 +171,7 @@ impl App {
             jsonl_snapshots: HashMap::new(),
             area_tree: Rect::default(),
             area_theme_label: Rect::default(),
+            finder_state: FinderState::new(),
         }
     }
 
@@ -299,6 +303,7 @@ impl App {
                         InputMode::TextInput => self.handle_text_input_key(key),
                         InputMode::Confirm => self.handle_confirm_key(key),
                         InputMode::GroupPicker => self.handle_group_picker_key(key),
+                        InputMode::Finder => self.handle_finder_key(key),
                         InputMode::Normal => unreachable!(),
                     }
                 }
@@ -410,6 +415,7 @@ impl App {
                     Some((format!("Theme: {}", theme::current_name()), Instant::now()));
                 self.persist_theme();
             }
+            NexusCommand::OpenFinder => self.start_finder(),
         }
     }
 
@@ -449,6 +455,7 @@ impl App {
             KeyCode::Char('x') => self.kill_tmux_session(),
             KeyCode::Char('t') => self.dispatch_nexus_command(NexusCommand::NextTheme),
             KeyCode::Char('T') => self.dispatch_nexus_command(NexusCommand::PrevTheme),
+            KeyCode::Char('p') => self.start_finder(),
             _ => {
                 if let Some(action) = self.tree_state.handle_key(key, &self.tree) {
                     self.handle_tree_action(action);
@@ -847,6 +854,55 @@ impl App {
                 self.input_context = None;
                 self.picker_groups.clear();
                 self.refresh_tree();
+            }
+            _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Session finder
+    // -----------------------------------------------------------------------
+
+    fn start_finder(&mut self) {
+        self.finder_state.open(&self.tree, self.show_dead_sessions);
+        self.input_mode = InputMode::Finder;
+    }
+
+    fn handle_finder_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Up => {
+                self.finder_state.cursor_up();
+            }
+            KeyCode::Down => {
+                self.finder_state.cursor_down();
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = self.finder_state.selected() {
+                    let session_id = entry.session_id.clone();
+                    self.input_mode = InputMode::Normal;
+                    // Navigate tree to the selected session
+                    if self.tree_state.jump_to_session(&session_id, &self.tree) {
+                        // Update selection and sync interactor
+                        self.selection.selected = Some(SelectionTarget::Session(session_id));
+                        self.refresh_cached_selected();
+                        self.sync_interactor_to_selection();
+                        // Auto-resume detached sessions
+                        self.ensure_session_launched();
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.finder_state.query.pop();
+                let q = self.finder_state.query.clone();
+                self.finder_state.update_query(q);
+            }
+            KeyCode::Char(c) => {
+                self.finder_state.query.push(c);
+                let q = self.finder_state.query.clone();
+                self.finder_state.update_query(q);
             }
             _ => {}
         }

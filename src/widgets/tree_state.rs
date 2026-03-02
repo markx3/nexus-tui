@@ -223,6 +223,58 @@ impl TreeState {
         }
     }
 
+    /// Navigate cursor directly to a session by ID, auto-expanding its parent group.
+    /// Returns true if the session was found and cursor was moved.
+    pub fn jump_to_session(&mut self, session_id: &str, tree: &[TreeNode]) -> bool {
+        // First, find and expand the parent group if the session is nested
+        Self::expand_parent_of(session_id, tree, &mut self.expanded);
+        self.invalidate_cache();
+        self.ensure_cache(tree);
+
+        // Find the session in the flat list and move cursor there
+        for (i, flat) in self.cached_flat.iter().enumerate() {
+            if let FlatNodeKind::Session { summary } = &flat.node {
+                if summary.session_id == session_id {
+                    self.cursor_index = i;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Recursively search for a session and expand its parent group.
+    fn expand_parent_of(
+        session_id: &str,
+        nodes: &[TreeNode],
+        expanded: &mut HashSet<GroupId>,
+    ) -> bool {
+        for node in nodes {
+            if let TreeNode::Group(g) = node {
+                for child in &g.children {
+                    match child {
+                        TreeNode::Session(s) if s.session_id == session_id => {
+                            expanded.insert(g.id);
+                            return true;
+                        }
+                        TreeNode::Group(_) => {
+                            if Self::expand_parent_of(
+                                session_id,
+                                std::slice::from_ref(child),
+                                expanded,
+                            ) {
+                                expanded.insert(g.id);
+                                return true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Ensure scroll_offset keeps cursor visible in the given viewport height.
     pub fn ensure_cursor_visible(&mut self, viewport_height: usize) {
         if viewport_height == 0 {
@@ -409,5 +461,91 @@ mod tests {
 
         let flat = state.visible_nodes(&tree);
         assert_eq!(flat.len(), 9);
+    }
+
+    #[test]
+    fn test_jump_to_session_in_expanded_group() {
+        let tree = mock::mock_tree();
+        let mut state = TreeState::new(&tree);
+        state.cursor_index = 0;
+
+        // Jump to "redesign-landing" (in "website" group, already expanded)
+        let found = state.jump_to_session("c3d4e5f6-a7b8-9012-cdef-123456789012", &tree);
+        assert!(found);
+        // Verify cursor is on that session
+        if let FlatNodeKind::Session { summary } = &state.cached_flat[state.cursor_index].node {
+            assert_eq!(summary.display_name, "redesign-landing");
+        } else {
+            panic!("cursor not on a session");
+        }
+    }
+
+    #[test]
+    fn test_jump_to_session_auto_expands_collapsed_group() {
+        let tree = mock::mock_tree();
+        let mut state = TreeState::new(&tree);
+
+        // Collapse the "nexus" group (id=1)
+        state.toggle_expand(1);
+        assert!(!state.expanded.contains(&1));
+
+        // Jump to "feat/scanner" which is in the collapsed nexus group
+        let found = state.jump_to_session("a1b2c3d4-e5f6-7890-abcd-ef1234567890", &tree);
+        assert!(found);
+        // Group should now be expanded
+        assert!(state.expanded.contains(&1));
+        // Cursor should be on feat/scanner
+        if let FlatNodeKind::Session { summary } = &state.cached_flat[state.cursor_index].node {
+            assert_eq!(summary.display_name, "feat/scanner");
+        } else {
+            panic!("cursor not on a session");
+        }
+    }
+
+    #[test]
+    fn test_jump_to_ungrouped_session() {
+        let tree = mock::mock_tree();
+        let mut state = TreeState::new(&tree);
+
+        // Jump to "quick-question" (in Ungrouped group)
+        let found = state.jump_to_session("e5f6a7b8-c9d0-1234-efab-345678901234", &tree);
+        assert!(found);
+        if let FlatNodeKind::Session { summary } = &state.cached_flat[state.cursor_index].node {
+            assert_eq!(summary.display_name, "quick-question");
+        } else {
+            panic!("cursor not on a session");
+        }
+    }
+
+    #[test]
+    fn test_jump_to_session_in_subgroup() {
+        let tree = mock::mock_tree();
+        let mut state = TreeState::new(&tree);
+
+        // Collapse api-work subgroup (id=3)
+        state.toggle_expand(3);
+        assert!(!state.expanded.contains(&3));
+
+        // Jump to "api-auth-endpoints" in the collapsed subgroup
+        let found = state.jump_to_session("d4e5f6a7-b8c9-0123-defa-234567890123", &tree);
+        assert!(found);
+        assert!(state.expanded.contains(&3));
+        if let FlatNodeKind::Session { summary } = &state.cached_flat[state.cursor_index].node {
+            assert_eq!(summary.display_name, "api-auth-endpoints");
+        } else {
+            panic!("cursor not on a session");
+        }
+    }
+
+    #[test]
+    fn test_jump_to_nonexistent_session() {
+        let tree = mock::mock_tree();
+        let mut state = TreeState::new(&tree);
+        state.cursor_index = 3;
+
+        let found = state.jump_to_session("nonexistent-id", &tree);
+        assert!(!found);
+        // Cursor should not have moved
+        assert_eq!(state.cursor_index, 3);
     }
 }

@@ -1,3 +1,4 @@
+pub mod finder_state;
 pub mod interactor;
 pub mod interactor_state;
 pub mod logo;

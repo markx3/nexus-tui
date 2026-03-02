@@ -83,6 +83,7 @@ pub enum InputMode {
     TextInput,
     Confirm,
     GroupPicker,
+    Finder,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +134,7 @@ pub enum NexusCommand {
     NextTheme,
     PrevTheme,
     OpenLazygit,
+    OpenFinder,
 }
 
 /// Result from routing an event through the interactor.

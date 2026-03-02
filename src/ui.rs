@@ -121,6 +121,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         InputMode::GroupPicker => {
             render_group_picker(frame, main_area, app);
         }
+        InputMode::Finder => {
+            render_finder(frame, area, app);
+        }
         InputMode::Normal => {}
     }
 
@@ -389,6 +392,164 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
 }
 
 // ---------------------------------------------------------------------------
+// Session finder overlay
+// ---------------------------------------------------------------------------
+
+fn render_finder(frame: &mut Frame, area: Rect, app: &App) {
+    // Small terminal guard
+    if area.width < 40 || area.height < 10 {
+        return;
+    }
+
+    let results = app.finder_state.results();
+    let max_visible = (area.height * 40 / 100).max(5) as usize;
+    let visible_count = results.len().min(max_visible);
+    // +4 for borders (2) + input row (1) + hints row (1)
+    let content_height = (visible_count as u16 + 4).min(area.height);
+    let content_width = (area.width * 60 / 100).max(40).min(area.width);
+
+    let overlay = centered_rect(content_width, content_height, area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            " SESSION FINDER ",
+            Style::new()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(theme::primary()))
+        .style(Style::new().bg(theme::surface()));
+
+    let inner = block.inner(overlay);
+    frame.render_widget(Clear, overlay);
+    frame.render_widget(block, overlay);
+
+    if inner.height < 2 || inner.width < 10 {
+        return;
+    }
+
+    // Build lines: input row + results + hints
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Input row with cursor
+    lines.push(Line::from(vec![
+        Span::styled("> ", Style::new().fg(theme::primary())),
+        Span::styled(
+            app.finder_state.query.clone(),
+            Style::new().fg(theme::text()),
+        ),
+        Span::styled("_", Style::new().fg(theme::primary())),
+    ]));
+
+    if results.is_empty() {
+        // Empty state
+        let msg = if app.finder_state.query.is_empty() {
+            "No sessions"
+        } else {
+            "No matching sessions"
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {msg}"),
+            Style::new().fg(theme::dim()),
+        )));
+    } else {
+        // Scrolling: determine visible window around cursor
+        let cursor = app.finder_state.cursor;
+        let scroll_offset = if cursor >= max_visible {
+            cursor - max_visible + 1
+        } else {
+            0
+        };
+
+        let inner_width = inner.width as usize;
+        for (i, entry) in results
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(max_visible)
+        {
+            let is_selected = i == cursor;
+
+            let status_icon = match entry.status {
+                SessionStatus::Active => "●",
+                SessionStatus::Detached => "○",
+                SessionStatus::Dead => "×",
+            };
+
+            let status_style = match entry.status {
+                SessionStatus::Active => Style::new().fg(theme::secondary()),
+                SessionStatus::Detached => Style::new().fg(theme::dim()),
+                SessionStatus::Dead => Style::new().fg(theme::dim()),
+            };
+
+            // Calculate space for name, group, and cwd
+            // Format: " {icon} {name}  {group}  {cwd}"
+            let prefix_len = 4; // " X "
+            let group_display = if entry.group_name.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", entry.group_name)
+            };
+
+            let name = &entry.display_name;
+            let remaining =
+                inner_width.saturating_sub(prefix_len + name.len() + group_display.len());
+            let cwd_display = if !entry.cwd.is_empty() && remaining > 6 {
+                let cwd = &entry.cwd;
+                let max_cwd = remaining.saturating_sub(2); // "  " prefix
+                if cwd.len() > max_cwd {
+                    format!("  ...{}", &cwd[cwd.len() - max_cwd + 3..])
+                } else {
+                    format!("  {cwd}")
+                }
+            } else {
+                String::new()
+            };
+
+            let row_style = if is_selected {
+                Style::new().bg(theme::bg())
+            } else {
+                Style::new()
+            };
+
+            let name_style = if is_selected {
+                Style::new()
+                    .fg(theme::primary())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme::text())
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {status_icon} "), status_style),
+                Span::styled(name.clone(), name_style.patch(row_style)),
+                Span::styled(
+                    group_display,
+                    Style::new().fg(theme::dim()).patch(row_style),
+                ),
+                Span::styled(cwd_display, Style::new().fg(theme::dim()).patch(row_style)),
+            ]));
+        }
+    }
+
+    // Pad remaining space then add hints at bottom
+    let used_lines = lines.len() as u16;
+    let available = inner.height;
+    if used_lines < available {
+        for _ in used_lines..available.saturating_sub(1) {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            " ↑↓ navigate  Enter select  Esc close",
+            Style::new().fg(theme::dim()),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+// ---------------------------------------------------------------------------
 // Help overlay
 // ---------------------------------------------------------------------------
 
@@ -410,6 +571,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+f", "Fullscreen attach to session"),
         ("Alt+t / Alt+T", "Cycle theme"),
         ("Alt+l", "Open lazygit in session cwd"),
+        ("Alt+p", "Session finder"),
         ("", ""),
         ("", "All other keys are forwarded to"),
         ("", "the embedded Claude Code session."),
