@@ -64,6 +64,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             let _lock = acquire_lock()?;
             let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
             let tmux_name = sanitize_tmux_name(&name);
+            let tmux_name = db.next_unique_tmux_name(&tmux_name, None)?;
             let cwd = cwd.unwrap_or_else(|| {
                 std::env::current_dir()
                     .map(|p| p.to_string_lossy().to_string())

@@ -617,6 +617,10 @@ impl App {
             }
             InputContext::RenameSession { session_id } => {
                 let new_tmux_name = sanitize_tmux_name(&buffer);
+                let new_tmux_name = self
+                    .db
+                    .next_unique_tmux_name(&new_tmux_name, Some(&session_id))
+                    .unwrap_or(new_tmux_name);
                 // Rename the live tmux session if it exists
                 if let Some(old_tmux) = find_session_in_tree(&self.tree, &session_id)
                     .and_then(|s| s.tmux_name.as_deref())
@@ -907,6 +911,10 @@ impl App {
 
     fn create_session(&mut self, name: &str, cwd: &str, group_id: Option<GroupId>) {
         let tmux_name = sanitize_tmux_name(name);
+        let tmux_name = self
+            .db
+            .next_unique_tmux_name(&tmux_name, None)
+            .unwrap_or(tmux_name);
         let snapshot = snapshot_jsonl_stems(cwd);
         match self.db.create_nexus_session(name, cwd, &tmux_name) {
             Ok(id) => {

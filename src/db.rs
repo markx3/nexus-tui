@@ -388,6 +388,57 @@ impl Database {
     }
 
     // -----------------------------------------------------------------------
+    // Tmux name uniqueness
+    // -----------------------------------------------------------------------
+
+    /// Return a tmux_name guaranteed unique among existing sessions.
+    /// If `base` is free, returns it unchanged; otherwise appends `-2`, `-3`, …
+    /// Optionally excludes a session_id (for renames — the session's own row shouldn't block itself).
+    pub fn next_unique_tmux_name(&self, base: &str, exclude_id: Option<&str>) -> Result<String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tmux_name FROM sessions WHERE tmux_name IS NOT NULL",
+        )?;
+
+        let existing: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // If excluding a session, fetch its current tmux_name so we don't count it.
+        let excluded_name: Option<String> = if let Some(eid) = exclude_id {
+            self.conn
+                .prepare("SELECT tmux_name FROM sessions WHERE session_id = ?1")?
+                .query_row(params![eid], |row| row.get::<_, Option<String>>(0))
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+
+        let is_taken = |name: &str| -> bool {
+            if let Some(ref exc) = excluded_name {
+                if name == exc {
+                    return false;
+                }
+            }
+            existing.contains(name)
+        };
+
+        if !is_taken(base) {
+            return Ok(base.to_string());
+        }
+
+        let mut suffix = 2u32;
+        loop {
+            let candidate = format!("{base}-{suffix}");
+            if !is_taken(&candidate) {
+                return Ok(candidate);
+            }
+            suffix += 1;
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
@@ -820,6 +871,41 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn test_next_unique_tmux_name() {
+        let db = Database::open_in_memory().unwrap();
+
+        // First use of "foo" should be free.
+        assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo");
+
+        // Insert a session with tmux_name "foo".
+        db.create_nexus_session("foo", "/tmp", "foo").unwrap();
+        assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo-2");
+
+        // Insert "foo-2".
+        db.create_nexus_session("foo2", "/tmp", "foo-2").unwrap();
+        assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo-3");
+
+        // Unrelated name is unaffected.
+        assert_eq!(db.next_unique_tmux_name("bar", None).unwrap(), "bar");
+    }
+
+    #[test]
+    fn test_next_unique_tmux_name_exclude_self() {
+        let db = Database::open_in_memory().unwrap();
+
+        let id = db.create_nexus_session("foo", "/tmp", "foo").unwrap();
+
+        // Without exclude: "foo" is taken.
+        assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo-2");
+
+        // With exclude: renaming to own name is fine.
+        assert_eq!(
+            db.next_unique_tmux_name("foo", Some(&id)).unwrap(),
+            "foo"
+        );
     }
 
     fn count_sessions(tree: &[TreeNode]) -> usize {
