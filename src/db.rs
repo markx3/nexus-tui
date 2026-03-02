@@ -395,9 +395,9 @@ impl Database {
     /// If `base` is free, returns it unchanged; otherwise appends `-2`, `-3`, …
     /// Optionally excludes a session_id (for renames — the session's own row shouldn't block itself).
     pub fn next_unique_tmux_name(&self, base: &str, exclude_id: Option<&str>) -> Result<String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT tmux_name FROM sessions WHERE tmux_name IS NOT NULL",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tmux_name FROM sessions WHERE tmux_name IS NOT NULL")?;
 
         let existing: std::collections::HashSet<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
@@ -902,10 +902,7 @@ mod tests {
         assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo-2");
 
         // With exclude: renaming to own name is fine.
-        assert_eq!(
-            db.next_unique_tmux_name("foo", Some(&id)).unwrap(),
-            "foo"
-        );
+        assert_eq!(db.next_unique_tmux_name("foo", Some(&id)).unwrap(), "foo");
     }
 
     fn count_sessions(tree: &[TreeNode]) -> usize {

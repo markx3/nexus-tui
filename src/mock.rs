@@ -61,7 +61,7 @@ pub fn mock_tree() -> Vec<TreeNode> {
                     id: 3,
                     name: "api-work".to_string(),
                     icon: GroupIcon::SubGroup,
-        
+
                     children: vec![TreeNode::Session(SessionSummary {
                         session_id: "d4e5f6a7-b8c9-0123-defa-234567890123".to_string(),
                         display_name: "api-auth-endpoints".to_string(),

@@ -19,22 +19,13 @@ pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, activ
     };
 
     let status = Line::from(vec![
-        Span::styled(
-            " SYS:",
-            theme::style_for(ThemeElement::TopBarLabel),
-        ),
-        Span::styled(
-            "ONLINE",
-            theme::style_for(ThemeElement::Secondary),
-        ),
+        Span::styled(" SYS:", theme::style_for(ThemeElement::TopBarLabel)),
+        Span::styled("ONLINE", theme::style_for(ThemeElement::Secondary)),
         Span::styled(
             format!(" {} ", theme::SEPARATOR),
             theme::style_for(ThemeElement::TopBarLabel),
         ),
-        Span::styled(
-            "SESSIONS:",
-            theme::style_for(ThemeElement::TopBarLabel),
-        ),
+        Span::styled("SESSIONS:", theme::style_for(ThemeElement::TopBarLabel)),
         Span::styled(
             format!("{session_count}"),
             theme::style_for(ThemeElement::TopBarValue),
@@ -43,19 +34,13 @@ pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, activ
             format!(" {} ", theme::SEPARATOR),
             theme::style_for(ThemeElement::TopBarLabel),
         ),
-        Span::styled(
-            "ACTIVE:",
-            theme::style_for(ThemeElement::TopBarLabel),
-        ),
+        Span::styled("ACTIVE:", theme::style_for(ThemeElement::TopBarLabel)),
         Span::styled(format!("{active_count}"), active_style),
         Span::styled(
             format!(" {} ", theme::SEPARATOR),
             theme::style_for(ThemeElement::TopBarLabel),
         ),
-        Span::styled(
-            date,
-            theme::style_for(ThemeElement::TopBarLabel),
-        ),
+        Span::styled(date, theme::style_for(ThemeElement::TopBarLabel)),
     ]);
 
     let block = Block::default()
