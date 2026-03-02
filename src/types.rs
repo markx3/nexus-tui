@@ -22,9 +22,6 @@ pub struct GroupNode {
     pub name: String,
     pub icon: GroupIcon,
     pub children: Vec<TreeNode>,
-    #[serde(skip)]
-    #[allow(dead_code)]
-    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -141,8 +138,8 @@ pub enum NexusCommand {
 /// Result from routing an event through the interactor.
 #[derive(Debug)]
 pub enum RouteResult {
-    /// Event was forwarded to tmux.
-    Forwarded,
+    /// Event was handled locally (scroll, tmux forward, paste).
+    Handled,
     /// Event is a nexus command that App should dispatch.
     NexusCommand(NexusCommand),
     /// Event was ignored (modal overlay active, unrecognized key).
@@ -216,16 +213,16 @@ pub enum Role {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Variants used via style_for() match + test coverage
 pub enum ThemeElement {
     Background,
     Surface,
     Text,
     Dim,
-    NeonCyan,
-    AcidGreen,
+    Primary,
+    Secondary,
     Hazard,
-    NeonMagenta,
+    Accent,
     Border,
     ActiveSession,
     IdleSession,

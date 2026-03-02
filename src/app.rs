@@ -26,6 +26,28 @@ const TICK_RATE: Duration = Duration::from_millis(16);
 const TMUX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const LOGO_FRAME_INTERVAL: Duration = Duration::from_millis(300);
 
+/// Suspend the TUI (alternate screen, raw mode, mouse/paste), run a closure,
+/// then restore the TUI. Used by fullscreen attach and lazygit.
+fn with_suspended_tui<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste
+    );
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+
+    let result = f();
+
+    let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
+    let _ = crossterm::terminal::enable_raw_mode();
+    let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
+    result
+}
+
 pub struct App {
     pub should_quit: bool,
     pub(crate) boot_done: bool,
@@ -300,7 +322,7 @@ impl App {
         if let Some(ref mut is) = self.interactor_state {
             let result = is.route_event(&event, current_tmux_name.as_deref());
             match result {
-                RouteResult::Forwarded => return,
+                RouteResult::Handled => return,
                 RouteResult::NexusCommand(cmd) => {
                     self.dispatch_nexus_command(cmd);
                     return;
@@ -983,23 +1005,7 @@ impl App {
 
     /// Suspend the TUI, attach to a tmux session, then restore the TUI.
     fn attach_tmux_session(&mut self, tmux_name: &str) {
-        // Leave ratatui's alternate screen, raw mode, and bracketed paste so tmux can take over
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            DisableMouseCapture,
-            DisableBracketedPaste
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
-
-        let result = self.tmux.resume_session(tmux_name);
-
-        // Restore ratatui's terminal state
-        let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
-        let _ = crossterm::terminal::enable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
-
-        // Force a full redraw — ratatui's internal buffer is stale after tmux
+        let result = with_suspended_tui(|| self.tmux.resume_session(tmux_name));
         self.needs_full_redraw = true;
 
         if let Err(e) = result {
@@ -1026,22 +1032,12 @@ impl App {
             }
         };
 
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            DisableMouseCapture,
-            DisableBracketedPaste
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
-
-        let result = std::process::Command::new("lazygit")
-            .arg("-p")
-            .arg(&cwd)
-            .status();
-
-        let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
-        let _ = crossterm::terminal::enable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
+        let result = with_suspended_tui(|| {
+            std::process::Command::new("lazygit")
+                .arg("-p")
+                .arg(&cwd)
+                .status()
+        });
         self.needs_full_redraw = true;
 
         if let Err(e) = result {

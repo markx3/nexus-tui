@@ -17,7 +17,6 @@ pub fn render_interactor(
     area: Rect,
     content: Option<&SessionContent>,
     session_name: Option<&str>,
-    _focused: bool,
     log_scroll_offset: u16,
     live_scroll_offset: u16,
 ) {
@@ -61,7 +60,7 @@ pub fn render_interactor(
 ///
 /// Scrolls to the bottom so the input cursor area is always visible.
 fn render_live(frame: &mut Frame, area: Rect, text: &Text<'static>, user_offset: u16) {
-    let total_lines = text.lines.len() as u16;
+    let total_lines = (text.lines.len().min(u16::MAX as usize)) as u16;
     let bottom_pin = total_lines.saturating_sub(area.height);
     let scroll_offset = bottom_pin.saturating_sub(user_offset);
     let paragraph = Paragraph::new(text.clone()).scroll((scroll_offset, 0));
@@ -111,7 +110,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, None, None, false, 0, 0);
+                render_interactor(frame, area, None, None, 0, 0);
             })
             .unwrap();
     }
@@ -130,7 +129,6 @@ mod tests {
                     area,
                     Some(&content),
                     Some("test-session"),
-                    false,
                     0,
                     0,
                 );
@@ -159,7 +157,6 @@ mod tests {
                     area,
                     Some(&content),
                     Some("old-session"),
-                    false,
                     0,
                     0,
                 );
@@ -175,7 +172,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), None, false, 0, 0);
+                render_interactor(frame, area, Some(&content), None, 0, 0);
             })
             .unwrap();
     }
@@ -187,7 +184,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, None, None, false, 0, 0);
+                render_interactor(frame, area, None, None, 0, 0);
             })
             .unwrap();
     }
@@ -199,7 +196,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, 0, 0);
-                render_interactor(frame, area, None, None, false, 0, 0);
+                render_interactor(frame, area, None, None, 0, 0);
             })
             .unwrap();
     }
@@ -222,7 +219,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), None, false, 10, 0);
+                render_interactor(frame, area, Some(&content), None, 10, 0);
             })
             .unwrap();
     }
@@ -243,7 +240,6 @@ mod tests {
                     area,
                     Some(&content),
                     Some("live-session"),
-                    false,
                     0,
                     5,
                 );

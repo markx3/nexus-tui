@@ -251,19 +251,19 @@ impl InteractorState {
                     match key.code {
                         KeyCode::Up => {
                             self.live_scroll_offset = self.live_scroll_offset.saturating_add(1);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         KeyCode::Down => {
                             self.live_scroll_offset = self.live_scroll_offset.saturating_sub(1);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         KeyCode::PageUp => {
                             self.live_scroll_offset = self.live_scroll_offset.saturating_add(10);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         KeyCode::PageDown => {
                             self.live_scroll_offset = self.live_scroll_offset.saturating_sub(10);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         _ => {}
                     }
@@ -277,7 +277,7 @@ impl InteractorState {
                         self.live_scroll_offset = 0;
                         // Wake capture worker so display updates immediately
                         let _ = self.nudge_tx.send(());
-                        return RouteResult::Forwarded;
+                        return RouteResult::Handled;
                     }
                 }
 
@@ -289,19 +289,19 @@ impl InteractorState {
                     match key.code {
                         KeyCode::Up => {
                             self.scroll_up(1);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         KeyCode::Down => {
                             self.scroll_down(1);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         KeyCode::PageUp => {
                             self.scroll_up(10);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         KeyCode::PageDown => {
                             self.scroll_down(10);
-                            return RouteResult::Forwarded;
+                            return RouteResult::Handled;
                         }
                         _ => {}
                     }
@@ -316,7 +316,7 @@ impl InteractorState {
                     if text.len() <= 1_048_576 {
                         let _ = self.tmux.load_buffer_and_paste(tmux_name, text);
                         let _ = self.nudge_tx.send(());
-                        return RouteResult::Forwarded;
+                        return RouteResult::Handled;
                     }
                 }
                 RouteResult::Ignored

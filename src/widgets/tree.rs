@@ -32,7 +32,7 @@ pub fn render_tree(
     focused: bool,
 ) {
     let title_style = if focused {
-        theme::style_for(ThemeElement::NeonCyan).add_modifier(Modifier::BOLD)
+        theme::style_for(ThemeElement::Primary).add_modifier(Modifier::BOLD)
     } else {
         theme::style_for(ThemeElement::Dim)
     };

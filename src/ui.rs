@@ -95,7 +95,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         interactor_area,
         interactor_content,
         interactor_session_name,
-        false,
         log_scroll,
         live_scroll,
     );

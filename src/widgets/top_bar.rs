@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::theme;
-use crate::types::PanelType;
+use crate::types::{PanelType, ThemeElement};
 
 /// Render the top status bar.
 ///
@@ -13,48 +13,48 @@ pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, activ
     let date = current_date_string();
 
     let active_style = if active_count > 0 {
-        theme::style_for(crate::types::ThemeElement::AcidGreen)
+        theme::style_for(ThemeElement::Secondary)
     } else {
-        theme::style_for(crate::types::ThemeElement::Text)
+        theme::style_for(ThemeElement::Text)
     };
 
     let status = Line::from(vec![
         Span::styled(
             " SYS:",
-            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+            theme::style_for(ThemeElement::TopBarLabel),
         ),
         Span::styled(
             "ONLINE",
-            theme::style_for(crate::types::ThemeElement::AcidGreen),
+            theme::style_for(ThemeElement::Secondary),
         ),
         Span::styled(
             format!(" {} ", theme::SEPARATOR),
-            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+            theme::style_for(ThemeElement::TopBarLabel),
         ),
         Span::styled(
             "SESSIONS:",
-            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+            theme::style_for(ThemeElement::TopBarLabel),
         ),
         Span::styled(
             format!("{session_count}"),
-            theme::style_for(crate::types::ThemeElement::TopBarValue),
+            theme::style_for(ThemeElement::TopBarValue),
         ),
         Span::styled(
             format!(" {} ", theme::SEPARATOR),
-            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+            theme::style_for(ThemeElement::TopBarLabel),
         ),
         Span::styled(
             "ACTIVE:",
-            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+            theme::style_for(ThemeElement::TopBarLabel),
         ),
         Span::styled(format!("{active_count}"), active_style),
         Span::styled(
             format!(" {} ", theme::SEPARATOR),
-            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+            theme::style_for(ThemeElement::TopBarLabel),
         ),
         Span::styled(
             date,
-            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+            theme::style_for(ThemeElement::TopBarLabel),
         ),
     ]);
 
@@ -62,7 +62,7 @@ pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, activ
         .borders(Borders::ALL)
         .border_set(theme::border_for(PanelType::TopBar))
         .border_style(theme::border_style_for(PanelType::TopBar, true))
-        .style(theme::style_for(crate::types::ThemeElement::Surface));
+        .style(theme::style_for(ThemeElement::Surface));
 
     let paragraph = Paragraph::new(status).block(block);
     frame.render_widget(paragraph, area);

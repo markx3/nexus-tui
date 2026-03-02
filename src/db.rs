@@ -351,7 +351,6 @@ impl Database {
                 name: gname.clone(),
                 icon: GroupIcon::SubGroup,
                 children,
-                collapsed: false,
             }));
         }
 
@@ -363,7 +362,6 @@ impl Database {
                 name: "Ungrouped".to_string(),
                 icon: GroupIcon::Root,
                 children: ungrouped.into_iter().map(TreeNode::Session).collect(),
-                collapsed: false,
             }));
         }
 

@@ -8,7 +8,7 @@ pub fn mock_tree() -> Vec<TreeNode> {
             id: 1,
             name: "nexus".to_string(),
             icon: GroupIcon::Root,
-            collapsed: false,
+
             children: vec![
                 TreeNode::Session(SessionSummary {
                     session_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string(),
@@ -42,7 +42,7 @@ pub fn mock_tree() -> Vec<TreeNode> {
             id: 2,
             name: "website".to_string(),
             icon: GroupIcon::Root,
-            collapsed: false,
+
             children: vec![
                 TreeNode::Session(SessionSummary {
                     session_id: "c3d4e5f6-a7b8-9012-cdef-123456789012".to_string(),
@@ -61,7 +61,7 @@ pub fn mock_tree() -> Vec<TreeNode> {
                     id: 3,
                     name: "api-work".to_string(),
                     icon: GroupIcon::SubGroup,
-                    collapsed: true,
+        
                     children: vec![TreeNode::Session(SessionSummary {
                         session_id: "d4e5f6a7-b8c9-0123-defa-234567890123".to_string(),
                         display_name: "api-auth-endpoints".to_string(),
@@ -82,7 +82,7 @@ pub fn mock_tree() -> Vec<TreeNode> {
             id: 4,
             name: "Ungrouped".to_string(),
             icon: GroupIcon::Root,
-            collapsed: false,
+
             children: vec![SessionSummary {
                 session_id: "e5f6a7b8-c9d0-1234-efab-345678901234".to_string(),
                 display_name: "quick-question".to_string(),

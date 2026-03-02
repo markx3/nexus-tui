@@ -192,10 +192,6 @@ impl TreeState {
 
     /// Handle a key event, returning an optional action.
     pub fn handle_key(&mut self, key: KeyEvent, tree: &[TreeNode]) -> Option<TreeAction> {
-        self.handle_normal_key(key, tree)
-    }
-
-    fn handle_normal_key(&mut self, key: KeyEvent, tree: &[TreeNode]) -> Option<TreeAction> {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_cursor_down(tree);

@@ -52,14 +52,6 @@ pub fn complete_path(input: &str) -> Vec<String> {
         let path = Path::new(&expanded);
         match (path.parent(), path.file_name()) {
             (Some(p), Some(f)) => {
-                let parent = if p.as_os_str().is_empty() {
-                    "."
-                } else {
-                    // Leak is avoided by using expanded as the backing storage
-                    // We'll just re-derive below
-                    ""
-                };
-                let _ = parent; // suppress warning
                 let parent_str = if p.as_os_str().is_empty() {
                     ".".to_string()
                 } else {
