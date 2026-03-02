@@ -16,7 +16,11 @@ use crate::tmux::TmuxManager;
 /// - `nudge_tx`: send after forwarding a key to wake the worker immediately
 pub fn spawn(
     tmux: TmuxManager,
-) -> (mpsc::Sender<String>, mpsc::Receiver<Option<Text<'static>>>, mpsc::Sender<()>) {
+) -> (
+    mpsc::Sender<String>,
+    mpsc::Receiver<Option<Text<'static>>>,
+    mpsc::Sender<()>,
+) {
     let (session_tx, session_rx) = mpsc::channel::<String>();
     let (content_tx, content_rx) = mpsc::channel::<Option<Text<'static>>>();
     let (nudge_tx, nudge_rx) = mpsc::channel::<()>();

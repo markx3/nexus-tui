@@ -75,10 +75,7 @@ impl InteractorState {
     ///
     /// Tells the capture worker which session to capture. If the session has no
     /// tmux pane, loads the conversation log instead.
-    pub fn switch_session(
-        &mut self,
-        session: &SessionSummary,
-    ) {
+    pub fn switch_session(&mut self, session: &SessionSummary) {
         self.log_scroll_offset = 0;
         self.live_scroll_offset = 0;
         self.current_session_name = Some(session.display_name.clone());
@@ -142,7 +139,10 @@ impl InteractorState {
         for turn in turns {
             let (role_label, role_style) = match turn.role {
                 Role::Human => ("You", theme::style_for(ThemeElement::ConversationHuman)),
-                Role::Assistant => ("Claude", theme::style_for(ThemeElement::ConversationAssistant)),
+                Role::Assistant => (
+                    "Claude",
+                    theme::style_for(ThemeElement::ConversationAssistant),
+                ),
             };
 
             lines.push(Line::from(Span::styled(
@@ -197,11 +197,7 @@ impl InteractorState {
     ///
     /// `current_tmux_name` is the tmux session name to forward keys to.
     /// When `None` (no active tmux pane), non-Alt keys are ignored.
-    pub fn route_event(
-        &mut self,
-        event: &Event,
-        current_tmux_name: Option<&str>,
-    ) -> RouteResult {
+    pub fn route_event(&mut self, event: &Event, current_tmux_name: Option<&str>) -> RouteResult {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // Alt+key → NexusCommand
@@ -219,14 +215,20 @@ impl InteractorState {
                         KeyCode::Char('k') => RouteResult::NexusCommand(NexusCommand::CursorUp),
                         KeyCode::Char('e') => RouteResult::NexusCommand(NexusCommand::ToggleExpand),
                         KeyCode::Char('n') => RouteResult::NexusCommand(NexusCommand::NewSession),
-                        KeyCode::Char('d') => RouteResult::NexusCommand(NexusCommand::DeleteSelected),
-                        KeyCode::Char('r') => RouteResult::NexusCommand(NexusCommand::RenameSelected),
+                        KeyCode::Char('d') => {
+                            RouteResult::NexusCommand(NexusCommand::DeleteSelected)
+                        }
+                        KeyCode::Char('r') => {
+                            RouteResult::NexusCommand(NexusCommand::RenameSelected)
+                        }
                         KeyCode::Char('m') | KeyCode::Enter => {
                             RouteResult::NexusCommand(NexusCommand::MoveSession)
                         }
                         KeyCode::Char('g') => RouteResult::NexusCommand(NexusCommand::NewGroup),
                         KeyCode::Char('x') => RouteResult::NexusCommand(NexusCommand::KillTmux),
-                        KeyCode::Char('f') => RouteResult::NexusCommand(NexusCommand::FullscreenAttach),
+                        KeyCode::Char('f') => {
+                            RouteResult::NexusCommand(NexusCommand::FullscreenAttach)
+                        }
                         KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::Backspace => {
                             RouteResult::NexusCommand(NexusCommand::ToggleHelp)
                         }
@@ -234,15 +236,9 @@ impl InteractorState {
                         KeyCode::Char('H') => {
                             RouteResult::NexusCommand(NexusCommand::ToggleDeadSessions)
                         }
-                        KeyCode::Char('t') => {
-                            RouteResult::NexusCommand(NexusCommand::NextTheme)
-                        }
-                        KeyCode::Char('T') => {
-                            RouteResult::NexusCommand(NexusCommand::PrevTheme)
-                        }
-                        KeyCode::Char('l') => {
-                            RouteResult::NexusCommand(NexusCommand::OpenLazygit)
-                        }
+                        KeyCode::Char('t') => RouteResult::NexusCommand(NexusCommand::NextTheme),
+                        KeyCode::Char('T') => RouteResult::NexusCommand(NexusCommand::PrevTheme),
+                        KeyCode::Char('l') => RouteResult::NexusCommand(NexusCommand::OpenLazygit),
                         _ => RouteResult::Ignored,
                     };
                 }
@@ -253,10 +249,22 @@ impl InteractorState {
                     && key.modifiers.contains(KeyModifiers::SHIFT)
                 {
                     match key.code {
-                        KeyCode::Up => { self.live_scroll_offset = self.live_scroll_offset.saturating_add(1); return RouteResult::Forwarded; }
-                        KeyCode::Down => { self.live_scroll_offset = self.live_scroll_offset.saturating_sub(1); return RouteResult::Forwarded; }
-                        KeyCode::PageUp => { self.live_scroll_offset = self.live_scroll_offset.saturating_add(10); return RouteResult::Forwarded; }
-                        KeyCode::PageDown => { self.live_scroll_offset = self.live_scroll_offset.saturating_sub(10); return RouteResult::Forwarded; }
+                        KeyCode::Up => {
+                            self.live_scroll_offset = self.live_scroll_offset.saturating_add(1);
+                            return RouteResult::Forwarded;
+                        }
+                        KeyCode::Down => {
+                            self.live_scroll_offset = self.live_scroll_offset.saturating_sub(1);
+                            return RouteResult::Forwarded;
+                        }
+                        KeyCode::PageUp => {
+                            self.live_scroll_offset = self.live_scroll_offset.saturating_add(10);
+                            return RouteResult::Forwarded;
+                        }
+                        KeyCode::PageDown => {
+                            self.live_scroll_offset = self.live_scroll_offset.saturating_sub(10);
+                            return RouteResult::Forwarded;
+                        }
                         _ => {}
                     }
                 }
@@ -274,12 +282,27 @@ impl InteractorState {
                 }
 
                 // No active tmux pane — handle scroll for conversation log
-                if matches!(self.current_content, Some(SessionContent::ConversationLog(_))) {
+                if matches!(
+                    self.current_content,
+                    Some(SessionContent::ConversationLog(_))
+                ) {
                     match key.code {
-                        KeyCode::Up => { self.scroll_up(1); return RouteResult::Forwarded; }
-                        KeyCode::Down => { self.scroll_down(1); return RouteResult::Forwarded; }
-                        KeyCode::PageUp => { self.scroll_up(10); return RouteResult::Forwarded; }
-                        KeyCode::PageDown => { self.scroll_down(10); return RouteResult::Forwarded; }
+                        KeyCode::Up => {
+                            self.scroll_up(1);
+                            return RouteResult::Forwarded;
+                        }
+                        KeyCode::Down => {
+                            self.scroll_down(1);
+                            return RouteResult::Forwarded;
+                        }
+                        KeyCode::PageUp => {
+                            self.scroll_up(10);
+                            return RouteResult::Forwarded;
+                        }
+                        KeyCode::PageDown => {
+                            self.scroll_down(10);
+                            return RouteResult::Forwarded;
+                        }
                         _ => {}
                     }
                 }

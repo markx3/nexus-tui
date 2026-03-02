@@ -2,13 +2,12 @@ mod ansi;
 mod app;
 mod capture_worker;
 mod cli;
-mod conversation;
 pub(crate) mod config;
+mod conversation;
 pub(crate) mod db;
 #[cfg(test)]
 mod mock;
 mod path_complete;
-mod text_utils;
 mod theme;
 mod time_utils;
 pub(crate) mod tmux;
@@ -96,8 +95,8 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 .ok_or_else(|| color_eyre::eyre::eyre!("Session '{}' has no cwd", session_id))?;
             let name = sanitize_tmux_name(&session_id);
             let tree = db.get_visible_tree(true)?;
-            let resume_id = find_session_in_tree(&tree, &session_id)
-                .and_then(|s| s.claude_session_id.clone());
+            let resume_id =
+                find_session_in_tree(&tree, &session_id).and_then(|s| s.claude_session_id.clone());
             tmux.launch_claude_session(&name, &cwd, resume_id.as_deref())?;
             db.update_session_status(&session_id, types::SessionStatus::Active)?;
             println!("Launched session '{}'", session_id);
@@ -136,12 +135,18 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
             tmux.send_keys(&session_name, &tmux::SendKeysArgs::Literal(text))?;
             if json {
-                println!("{}", serde_json::json!({"status": "sent", "session": session_name}));
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "sent", "session": session_name})
+                );
             } else {
                 println!("Sent to '{}'", session_name);
             }
         }
-        cli::Commands::Capture { session_name, strip } => {
+        cli::Commands::Capture {
+            session_name,
+            strip,
+        } => {
             let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
             if !tmux.is_available() {
                 color_eyre::eyre::bail!("tmux is not available");
@@ -150,8 +155,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             if strip {
                 let sanitized = ansi::sanitize_ansi(raw.as_bytes());
                 // Remove all remaining escape sequences for plain text
-                let plain = String::from_utf8_lossy(&sanitized)
-                    .replace('\x1b', "");
+                let plain = String::from_utf8_lossy(&sanitized).replace('\x1b', "");
                 print!("{}", plain);
             } else {
                 print!("{}", raw);
@@ -171,7 +175,10 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
             db.delete_session(&session_id)?;
             if json {
-                println!("{}", serde_json::json!({"status": "deleted", "session": session_id}));
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "deleted", "session": session_id})
+                );
             } else {
                 println!("Deleted session '{}'", session_id);
             }
@@ -189,7 +196,10 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
             db.update_session_name(&session_id, &name, &new_tmux_name)?;
             if json {
-                println!("{}", serde_json::json!({"status": "renamed", "session": session_id, "name": name}));
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "renamed", "session": session_id, "name": name})
+                );
             } else {
                 println!("Renamed session '{}' to '{}'", session_id, name);
             }
@@ -202,7 +212,10 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             };
             db.move_session_to_group(&session_id, gid)?;
             if json {
-                println!("{}", serde_json::json!({"status": "moved", "session": session_id, "group": group}));
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "moved", "session": session_id, "group": group})
+                );
             } else {
                 println!("Moved session '{}' to group '{}'", session_id, group);
             }
@@ -211,7 +224,10 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             let _lock = acquire_lock()?;
             let gid = db.create_group(&name, "")?;
             if json {
-                println!("{}", serde_json::json!({"status": "created", "group": name, "id": gid}));
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "created", "group": name, "id": gid})
+                );
             } else {
                 println!("Created group '{}' (id: {})", name, gid);
             }
@@ -250,8 +266,7 @@ fn run_tui() -> Result<()> {
     };
 
     let terminal = ratatui::init();
-    let result =
-        app::App::new(config, tree, tmux, tmux_available, tmux_sessions, db).run(terminal);
+    let result = app::App::new(config, tree, tmux, tmux_available, tmux_sessions, db).run(terminal);
     ratatui::restore();
     result
 }
@@ -291,7 +306,10 @@ fn print_tree(tree: &[types::TreeNode], depth: usize) {
                     types::SessionStatus::Detached => "~",
                     types::SessionStatus::Dead => "-",
                 };
-                println!("{indent}{status_icon} {} [{}]", s.display_name, s.last_active);
+                println!(
+                    "{indent}{status_icon} {} [{}]",
+                    s.display_name, s.last_active
+                );
             }
         }
     }
@@ -316,9 +334,7 @@ fn print_session_detail(s: &types::SessionSummary) {
 fn acquire_lock() -> Result<fslock::LockFile> {
     let lock_dir = dirs::cache_dir()
         .ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "Cannot determine cache directory. Set XDG_CACHE_HOME or HOME."
-            )
+            color_eyre::eyre::eyre!("Cannot determine cache directory. Set XDG_CACHE_HOME or HOME.")
         })?
         .join("nexus");
     std::fs::create_dir_all(&lock_dir)?;

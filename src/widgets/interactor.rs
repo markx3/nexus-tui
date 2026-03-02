@@ -125,7 +125,15 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), Some("test-session"), false, 0, 0);
+                render_interactor(
+                    frame,
+                    area,
+                    Some(&content),
+                    Some("test-session"),
+                    false,
+                    0,
+                    0,
+                );
             })
             .unwrap();
     }
@@ -146,7 +154,15 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), Some("old-session"), false, 0, 0);
+                render_interactor(
+                    frame,
+                    area,
+                    Some(&content),
+                    Some("old-session"),
+                    false,
+                    0,
+                    0,
+                );
             })
             .unwrap();
     }
@@ -222,7 +238,15 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_interactor(frame, area, Some(&content), Some("live-session"), false, 0, 5);
+                render_interactor(
+                    frame,
+                    area,
+                    Some(&content),
+                    Some("live-session"),
+                    false,
+                    0,
+                    5,
+                );
             })
             .unwrap();
     }

@@ -91,14 +91,30 @@ pub enum InputMode {
 #[derive(Debug, Clone)]
 pub enum InputContext {
     NewSessionName,
-    NewSessionCwd { name: String },
-    RenameSession { session_id: String },
-    RenameGroup { group_id: GroupId },
+    NewSessionCwd {
+        name: String,
+    },
+    RenameSession {
+        session_id: String,
+    },
+    RenameGroup {
+        group_id: GroupId,
+    },
     NewGroupName,
-    ConfirmDeleteSession { session_id: String, tmux_name: Option<String> },
-    ConfirmDeleteGroup { group_id: GroupId },
-    MoveSession { session_id: String },
-    NewSessionGroup { name: String, cwd: String },
+    ConfirmDeleteSession {
+        session_id: String,
+        tmux_name: Option<String>,
+    },
+    ConfirmDeleteGroup {
+        group_id: GroupId,
+    },
+    MoveSession {
+        session_id: String,
+    },
+    NewSessionGroup {
+        name: String,
+        cwd: String,
+    },
 }
 
 /// Nexus commands triggered by Alt+key in the interactor.

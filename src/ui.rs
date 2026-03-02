@@ -16,10 +16,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     let area = frame.area();
 
     // Fill background
-    frame.render_widget(
-        Block::default().style(Style::new().bg(theme::bg())),
-        area,
-    );
+    frame.render_widget(Block::default().style(Style::new().bg(theme::bg())), area);
 
     // Terminal too small guard
     if area.width < 80 || area.height < 24 {
@@ -30,29 +27,20 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     }
 
     // Top-level: top bar + main area (no bottom strip — activity removed)
-    let [top_bar, main_area] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
+    let [top_bar, main_area] =
+        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
 
     // Main area: tree (13%) + right column (fills remainder)
-    let [left_panel, right_column] = Layout::horizontal([
-        Constraint::Percentage(13),
-        Constraint::Fill(1),
-    ])
-    .areas(main_area);
+    let [left_panel, right_column] =
+        Layout::horizontal([Constraint::Percentage(13), Constraint::Fill(1)]).areas(main_area);
 
     // Right column: interactor fills everything
     let interactor_area = right_column;
 
     // Split left panel: tree + optional logo
     let (tree_area, logo_area) = if left_panel.height >= 20 {
-        let [tree, logo] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(9),
-        ])
-        .areas(left_panel);
+        let [tree, logo] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(9)]).areas(left_panel);
         (tree, Some(logo))
     } else {
         (left_panel, None)
@@ -84,7 +72,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     }
 
     // Render the session interactor
-    let interactor_content = app.interactor_state.as_ref().and_then(|is| is.current_content.as_ref());
+    let interactor_content = app
+        .interactor_state
+        .as_ref()
+        .and_then(|is| is.current_content.as_ref());
     let interactor_session_name = app
         .interactor_state
         .as_ref()
@@ -246,7 +237,9 @@ fn render_text_input(frame: &mut Frame, panel_area: Rect, app: &App) {
                 let is_selected = global_index == app.path_suggestion_cursor;
                 let prefix = if is_selected { "> " } else { "  " };
                 let style = if is_selected {
-                    Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD)
+                    Style::new()
+                        .fg(theme::primary())
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::new().fg(theme::text())
                 };
@@ -278,7 +271,9 @@ fn render_text_input(frame: &mut Frame, panel_area: Rect, app: &App) {
     let content = Line::from(vec![
         Span::styled(
             format!("{label}: "),
-            Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(&app.input_buffer, Style::new().fg(theme::text())),
         Span::styled(cursor_char, Style::new().fg(theme::primary())),
@@ -317,7 +312,9 @@ fn render_confirm(frame: &mut Frame, panel_area: Rect, app: &App) {
 
     let content = Paragraph::new(Span::styled(
         message,
-        Style::new().fg(theme::hazard()).add_modifier(Modifier::BOLD),
+        Style::new()
+            .fg(theme::hazard())
+            .add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(content, inner);
 }
@@ -337,7 +334,10 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
         height: picker_height,
     };
 
-    let title = if matches!(app.input_context, Some(InputContext::NewSessionGroup { .. })) {
+    let title = if matches!(
+        app.input_context,
+        Some(InputContext::NewSessionGroup { .. })
+    ) {
         " Select group "
     } else {
         " Move to group "
@@ -345,7 +345,9 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             title,
-            Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::new().fg(theme::primary()))
@@ -363,7 +365,9 @@ fn render_group_picker(frame: &mut Frame, panel_area: Rect, app: &App) {
             let is_selected = i == app.picker_cursor;
             let prefix = if is_selected { "> " } else { "  " };
             let style = if is_selected {
-                Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(theme::primary())
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(theme::text())
             };
@@ -412,7 +416,9 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .title(Span::styled(
             " KEYBINDINGS ",
-            Style::new().fg(theme::primary()).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::primary())
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::new().fg(theme::primary()))
@@ -432,10 +438,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
                 ))
             } else {
                 Line::from(vec![
-                    Span::styled(
-                        format!("{key:>18}"),
-                        Style::new().fg(theme::primary()),
-                    ),
+                    Span::styled(format!("{key:>18}"), Style::new().fg(theme::primary())),
                     Span::styled(format!("  {desc}"), Style::new().fg(theme::text())),
                 ])
             }

@@ -13,12 +13,12 @@ use crate::widgets::tree_state::{FlatNodeKind, TreeState};
 // Icons
 // ---------------------------------------------------------------------------
 
-const ICON_ROOT: &str = "\u{25C8}";     // ◈
+const ICON_ROOT: &str = "\u{25C8}"; // ◈
 const ICON_SUBGROUP: &str = "\u{2B21}"; // ⬡
 const ICON_COLLAPSED: &str = "\u{25B6}"; // ▶
-const ICON_ACTIVE: &str = "\u{25CF}";   // ●
+const ICON_ACTIVE: &str = "\u{25CF}"; // ●
 const ICON_DETACHED: &str = "\u{25CB}"; // ○
-const ICON_DEAD: &str = "\u{25CC}";     // ◌
+const ICON_DEAD: &str = "\u{25CC}"; // ◌
 
 // ---------------------------------------------------------------------------
 // Tree renderer
@@ -67,7 +67,14 @@ pub fn render_tree(
     let end = (start + viewport_h).min(flat.len());
 
     const INDENTS: [&str; 8] = [
-        "", "  ", "    ", "      ", "        ", "          ", "            ", "              ",
+        "",
+        "  ",
+        "    ",
+        "      ",
+        "        ",
+        "          ",
+        "            ",
+        "              ",
     ];
 
     let mut lines: Vec<Line> = Vec::with_capacity(viewport_h);
@@ -86,8 +93,15 @@ pub fn render_tree(
 
     let actual_end = (start + content_start + content_slots).min(flat.len());
 
-    for (flat_idx, node) in flat.iter().enumerate().take(actual_end).skip(start + content_start) {
-        let indent = INDENTS.get(node.depth as usize).unwrap_or(&INDENTS[INDENTS.len() - 1]);
+    for (flat_idx, node) in flat
+        .iter()
+        .enumerate()
+        .take(actual_end)
+        .skip(start + content_start)
+    {
+        let indent = INDENTS
+            .get(node.depth as usize)
+            .unwrap_or(&INDENTS[INDENTS.len() - 1]);
         let is_selected = flat_idx == state.cursor_index;
 
         let line = match &node.node {
@@ -108,7 +122,11 @@ pub fn render_tree(
                 };
 
                 let icon_color = theme::primary();
-                let text_color = if is_selected { theme::text() } else { theme::dim() };
+                let text_color = if is_selected {
+                    theme::text()
+                } else {
+                    theme::dim()
+                };
                 let count_str = format!(" ({})", child_count);
 
                 Line::from(vec![
@@ -140,10 +158,7 @@ pub fn render_tree(
                         format!(" {}", summary.display_name),
                         Style::new().fg(name_color),
                     ),
-                    Span::styled(
-                        format!("  {}", rel_time),
-                        Style::new().fg(theme::dim()),
-                    ),
+                    Span::styled(format!("  {}", rel_time), Style::new().fg(theme::dim())),
                 ];
 
                 // Show status tag for non-active

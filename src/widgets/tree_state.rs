@@ -71,9 +71,7 @@ fn flatten_tree(
             TreeNode::Session(s) => {
                 out.push(FlatNode {
                     depth,
-                    node: FlatNodeKind::Session {
-                        summary: s.clone(),
-                    },
+                    node: FlatNodeKind::Session { summary: s.clone() },
                 });
             }
         }
@@ -182,12 +180,14 @@ impl TreeState {
     /// Get the selection target at the current cursor position.
     pub fn selected_target(&mut self, tree: &[TreeNode]) -> Option<SelectionTarget> {
         self.ensure_cache(tree);
-        self.cached_flat.get(self.cursor_index).map(|n| match &n.node {
-            FlatNodeKind::Group { id, .. } => SelectionTarget::Group(*id),
-            FlatNodeKind::Session { summary } => {
-                SelectionTarget::Session(summary.session_id.clone())
-            }
-        })
+        self.cached_flat
+            .get(self.cursor_index)
+            .map(|n| match &n.node {
+                FlatNodeKind::Group { id, .. } => SelectionTarget::Group(*id),
+                FlatNodeKind::Session { summary } => {
+                    SelectionTarget::Session(summary.session_id.clone())
+                }
+            })
     }
 
     /// Handle a key event, returning an optional action.
@@ -215,8 +215,7 @@ impl TreeState {
                             Some(TreeAction::ToggleExpand(gid))
                         }
                         FlatNodeKind::Session { summary } => {
-                            let target =
-                                SelectionTarget::Session(summary.session_id.clone());
+                            let target = SelectionTarget::Session(summary.session_id.clone());
                             Some(TreeAction::Select(target))
                         }
                     }

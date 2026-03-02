@@ -1,3 +1,7 @@
 /target
 .DS_Store
 .claude/worktrees/
+docs/
+todos/
+compound-engineering.local.md
+.claude/settings.local.json

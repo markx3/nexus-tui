@@ -75,8 +75,7 @@ impl Database {
     /// Open an in-memory database (for tests).
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
-        let conn =
-            Connection::open_in_memory().wrap_err("cannot open in-memory database")?;
+        let conn = Connection::open_in_memory().wrap_err("cannot open in-memory database")?;
 
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
@@ -141,12 +140,7 @@ impl Database {
     // -----------------------------------------------------------------------
 
     /// Create a new Nexus-managed session and return its UUID.
-    pub fn create_nexus_session(
-        &self,
-        name: &str,
-        cwd: &str,
-        tmux_name: &str,
-    ) -> Result<String> {
+    pub fn create_nexus_session(&self, name: &str, cwd: &str, tmux_name: &str) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = crate::time_utils::epoch_to_iso(crate::time_utils::now_epoch());
 
@@ -163,7 +157,11 @@ impl Database {
 
     /// Update a session's status.
     pub fn update_session_status(&self, session_id: &str, status: SessionStatus) -> Result<()> {
-        let is_active: i32 = if status == SessionStatus::Active { 1 } else { 0 };
+        let is_active: i32 = if status == SessionStatus::Active {
+            1
+        } else {
+            0
+        };
         self.conn.execute(
             "UPDATE sessions SET status = ?1, is_active = ?2 WHERE session_id = ?3",
             params![status.as_str(), is_active, session_id],
@@ -172,7 +170,12 @@ impl Database {
     }
 
     /// Update a session's display name and tmux name.
-    pub fn update_session_name(&self, session_id: &str, new_name: &str, new_tmux_name: &str) -> Result<()> {
+    pub fn update_session_name(
+        &self,
+        session_id: &str,
+        new_name: &str,
+        new_tmux_name: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE sessions SET display_name = ?1, tmux_name = ?2 WHERE session_id = ?3",
             params![new_name, new_tmux_name, session_id],
@@ -206,11 +209,9 @@ impl Database {
     pub fn create_group(&self, name: &str, icon: &str) -> Result<i64> {
         let max_order: i64 = self
             .conn
-            .query_row(
-                "SELECT COALESCE(MAX(sort_order), 0) FROM groups",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COALESCE(MAX(sort_order), 0) FROM groups", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
 
         self.conn.execute(
@@ -290,12 +291,16 @@ impl Database {
 
     /// Build the tree, optionally filtering out dead sessions.
     pub fn get_visible_tree(&self, show_dead: bool) -> Result<Vec<TreeNode>> {
-        let status_filter = if show_dead { "" } else { "AND s.status != 'dead'" };
+        let status_filter = if show_dead {
+            ""
+        } else {
+            "AND s.status != 'dead'"
+        };
 
         // Fetch all groups
-        let mut group_stmt = self.conn.prepare(
-            "SELECT id, name, icon, sort_order FROM groups ORDER BY sort_order",
-        )?;
+        let mut group_stmt = self
+            .conn
+            .prepare("SELECT id, name, icon, sort_order FROM groups ORDER BY sort_order")?;
 
         let groups: Vec<(i64, String, String)> = group_stmt
             .query_map([], |row| {
@@ -372,9 +377,9 @@ impl Database {
 
     /// Return all groups as (id, name) pairs, for the group picker.
     pub fn get_all_groups(&self) -> Result<Vec<(GroupId, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name FROM groups ORDER BY sort_order",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name FROM groups ORDER BY sort_order")?;
         let groups = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, GroupId>(0)?, row.get::<_, String>(1)?))
@@ -390,7 +395,11 @@ impl Database {
 
     /// Fetch sessions not assigned to any group.
     fn ungrouped_session_summaries(&self, show_dead: bool) -> Result<Vec<SessionSummary>> {
-        let status_filter = if show_dead { "" } else { "AND s.status != 'dead'" };
+        let status_filter = if show_dead {
+            ""
+        } else {
+            "AND s.status != 'dead'"
+        };
         let sql = format!(
             "SELECT s.session_id, s.display_name, s.cwd,
                     s.last_active, s.is_active,
@@ -427,9 +436,7 @@ impl Database {
 
     /// Look up a group id by name, returning `None` if not found.
     pub fn get_group_id_by_name(&self, name: &str) -> Result<Option<i64>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id FROM groups WHERE name = ?1")?;
+        let mut stmt = self.conn.prepare("SELECT id FROM groups WHERE name = ?1")?;
 
         let result = stmt
             .query_row(params![name], |row| row.get::<_, i64>(0))
@@ -500,9 +507,7 @@ mod tests {
     #[test]
     fn test_update_session_status() {
         let db = Database::open_in_memory().unwrap();
-        let id = db
-            .create_nexus_session("test", "/tmp", "test")
-            .unwrap();
+        let id = db.create_nexus_session("test", "/tmp", "test").unwrap();
 
         // Starts as active
         let tree = db.get_tree().unwrap();
@@ -510,7 +515,8 @@ mod tests {
         assert_eq!(sess.status, SessionStatus::Active);
 
         // Mark detached
-        db.update_session_status(&id, SessionStatus::Detached).unwrap();
+        db.update_session_status(&id, SessionStatus::Detached)
+            .unwrap();
         let tree = db.get_tree().unwrap();
         let sess = find_session(&tree, &id).unwrap();
         assert_eq!(sess.status, SessionStatus::Detached);
@@ -520,9 +526,7 @@ mod tests {
     #[test]
     fn test_update_session_name() {
         let db = Database::open_in_memory().unwrap();
-        let id = db
-            .create_nexus_session("old-name", "/tmp", "test")
-            .unwrap();
+        let id = db.create_nexus_session("old-name", "/tmp", "test").unwrap();
 
         db.update_session_name(&id, "new-name", "new-name").unwrap();
 
@@ -535,9 +539,7 @@ mod tests {
     #[test]
     fn test_delete_session() {
         let db = Database::open_in_memory().unwrap();
-        let id = db
-            .create_nexus_session("doomed", "/tmp", "doomed")
-            .unwrap();
+        let id = db.create_nexus_session("doomed", "/tmp", "doomed").unwrap();
 
         let gid = db.create_group("G", "").unwrap();
         db.assign_session_to_group(&id, gid).unwrap();
@@ -583,9 +585,7 @@ mod tests {
     #[test]
     fn test_move_session_to_group() {
         let db = Database::open_in_memory().unwrap();
-        let id = db
-            .create_nexus_session("test", "/tmp", "test")
-            .unwrap();
+        let id = db.create_nexus_session("test", "/tmp", "test").unwrap();
         let g1 = db.create_group("G1", "").unwrap();
         let g2 = db.create_group("G2", "").unwrap();
 
@@ -609,12 +609,8 @@ mod tests {
     #[test]
     fn test_assign_and_unassign_session() {
         let db = Database::open_in_memory().unwrap();
-        let id1 = db
-            .create_nexus_session("aaa", "/tmp/a", "aaa")
-            .unwrap();
-        let id2 = db
-            .create_nexus_session("bbb", "/tmp/b", "bbb")
-            .unwrap();
+        let id1 = db.create_nexus_session("aaa", "/tmp/a", "aaa").unwrap();
+        let id2 = db.create_nexus_session("bbb", "/tmp/b", "bbb").unwrap();
         let gid = db.create_group("Work", "").unwrap();
 
         db.assign_session_to_group(&id1, gid).unwrap();
@@ -630,9 +626,7 @@ mod tests {
     #[test]
     fn test_duplicate_assign_is_ignored() {
         let db = Database::open_in_memory().unwrap();
-        let id = db
-            .create_nexus_session("aaa", "/tmp", "aaa")
-            .unwrap();
+        let id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
         let gid = db.create_group("Work", "").unwrap();
 
         db.assign_session_to_group(&id, gid).unwrap();
@@ -687,7 +681,9 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         let _id1 = db.create_nexus_session("alive", "/tmp/a", "alive").unwrap();
-        let id2 = db.create_nexus_session("dead-one", "/tmp/b", "dead").unwrap();
+        let id2 = db
+            .create_nexus_session("dead-one", "/tmp/b", "dead")
+            .unwrap();
 
         db.update_session_status(&id2, SessionStatus::Dead).unwrap();
 
@@ -795,7 +791,10 @@ mod tests {
         assert!(db.get_setting("theme_index").unwrap().is_none());
 
         db.set_setting("theme_index", "3").unwrap();
-        assert_eq!(db.get_setting("theme_index").unwrap(), Some("3".to_string()));
+        assert_eq!(
+            db.get_setting("theme_index").unwrap(),
+            Some("3".to_string())
+        );
     }
 
     #[test]
@@ -803,7 +802,10 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         db.set_setting("theme_index", "1").unwrap();
         db.set_setting("theme_index", "5").unwrap();
-        assert_eq!(db.get_setting("theme_index").unwrap(), Some("5".to_string()));
+        assert_eq!(
+            db.get_setting("theme_index").unwrap(),
+            Some("5".to_string())
+        );
     }
 
     // Test helpers

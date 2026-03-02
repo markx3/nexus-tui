@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "nexus", version, about = "Cyberpunk TUI session manager for Claude Code")]
+#[command(
+    name = "nexus",
+    version,
+    about = "TUI session manager for Claude Code"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

@@ -9,12 +9,7 @@ use crate::types::PanelType;
 /// Render the top status bar.
 ///
 /// Layout: `SYS:ONLINE == SESSIONS:{count} == ACTIVE:{count} == {date}`
-pub fn render_top_bar(
-    frame: &mut Frame,
-    area: Rect,
-    session_count: usize,
-    active_count: usize,
-) {
+pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, active_count: usize) {
     let date = current_date_string();
 
     let active_style = if active_count > 0 {
@@ -24,13 +19,22 @@ pub fn render_top_bar(
     };
 
     let status = Line::from(vec![
-        Span::styled(" SYS:", theme::style_for(crate::types::ThemeElement::TopBarLabel)),
-        Span::styled("ONLINE", theme::style_for(crate::types::ThemeElement::AcidGreen)),
+        Span::styled(
+            " SYS:",
+            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+        ),
+        Span::styled(
+            "ONLINE",
+            theme::style_for(crate::types::ThemeElement::AcidGreen),
+        ),
         Span::styled(
             format!(" {} ", theme::SEPARATOR),
             theme::style_for(crate::types::ThemeElement::TopBarLabel),
         ),
-        Span::styled("SESSIONS:", theme::style_for(crate::types::ThemeElement::TopBarLabel)),
+        Span::styled(
+            "SESSIONS:",
+            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+        ),
         Span::styled(
             format!("{session_count}"),
             theme::style_for(crate::types::ThemeElement::TopBarValue),
@@ -39,13 +43,19 @@ pub fn render_top_bar(
             format!(" {} ", theme::SEPARATOR),
             theme::style_for(crate::types::ThemeElement::TopBarLabel),
         ),
-        Span::styled("ACTIVE:", theme::style_for(crate::types::ThemeElement::TopBarLabel)),
+        Span::styled(
+            "ACTIVE:",
+            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+        ),
         Span::styled(format!("{active_count}"), active_style),
         Span::styled(
             format!(" {} ", theme::SEPARATOR),
             theme::style_for(crate::types::ThemeElement::TopBarLabel),
         ),
-        Span::styled(date, theme::style_for(crate::types::ThemeElement::TopBarLabel)),
+        Span::styled(
+            date,
+            theme::style_for(crate::types::ThemeElement::TopBarLabel),
+        ),
     ]);
 
     let block = Block::default()

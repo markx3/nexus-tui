@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use crossterm::event::{EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, MouseEventKind};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    MouseEventKind,
+};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::DefaultTerminal;
 use tachyonfx::Effect;
@@ -95,7 +98,12 @@ impl App {
                 let _ = tmux.configure_server();
             }
             let (session_tx, content_rx, nudge_tx) = capture_worker::spawn(tmux.clone());
-            Some(InteractorState::new(tmux.clone(), content_rx, session_tx, nudge_tx))
+            Some(InteractorState::new(
+                tmux.clone(),
+                content_rx,
+                session_tx,
+                nudge_tx,
+            ))
         } else {
             None
         };
@@ -142,7 +150,11 @@ impl App {
 
         let result = self.event_loop(&mut terminal);
 
-        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            DisableBracketedPaste,
+            DisableMouseCapture
+        );
         result
     }
 
@@ -201,9 +213,15 @@ impl App {
             }
 
             let poll_timeout = if self.boot_done {
-                if self.dirty { TICK_RATE } else { Duration::from_millis(100) }
+                if self.dirty {
+                    TICK_RATE
+                } else {
+                    Duration::from_millis(100)
+                }
             } else {
-                TICK_RATE.saturating_sub(now.elapsed()).max(Duration::from_millis(1))
+                TICK_RATE
+                    .saturating_sub(now.elapsed())
+                    .max(Duration::from_millis(1))
             };
 
             if event::poll(poll_timeout)? {
@@ -272,7 +290,9 @@ impl App {
         }
 
         // Get the current tmux name for forwarding
-        let current_tmux_name = self.cached_selected.as_ref()
+        let current_tmux_name = self
+            .cached_selected
+            .as_ref()
             .filter(|s| s.status == SessionStatus::Active)
             .and_then(|s| s.tmux_name.clone());
 
@@ -343,19 +363,15 @@ impl App {
             }
             NexusCommand::NextTheme => {
                 theme::next_theme();
-                self.status_message = Some((
-                    format!("Theme: {}", theme::current_name()),
-                    Instant::now(),
-                ));
+                self.status_message =
+                    Some((format!("Theme: {}", theme::current_name()), Instant::now()));
                 self.persist_theme();
             }
             NexusCommand::OpenLazygit => self.open_lazygit(),
             NexusCommand::PrevTheme => {
                 theme::prev_theme();
-                self.status_message = Some((
-                    format!("Theme: {}", theme::current_name()),
-                    Instant::now(),
-                ));
+                self.status_message =
+                    Some((format!("Theme: {}", theme::current_name()), Instant::now()));
                 self.persist_theme();
             }
         }
@@ -366,10 +382,8 @@ impl App {
         let tmux_name = match self.cached_selected.as_ref() {
             Some(s) if s.status == SessionStatus::Active => s.tmux_name.clone(),
             _ => {
-                self.status_message = Some((
-                    "No active session to attach".to_string(),
-                    Instant::now(),
-                ));
+                self.status_message =
+                    Some(("No active session to attach".to_string(), Instant::now()));
                 return;
             }
         };
@@ -455,7 +469,9 @@ impl App {
     }
 
     fn persist_theme(&self) {
-        let _ = self.db.set_setting("theme_index", &theme::current_index().to_string());
+        let _ = self
+            .db
+            .set_setting("theme_index", &theme::current_index().to_string());
     }
 
     // -----------------------------------------------------------------------
@@ -475,12 +491,16 @@ impl App {
             }
             KeyCode::Tab if is_cwd && !self.path_suggestions.is_empty() => {
                 // Accept highlighted suggestion
-                if let Some(suggestion) = self.path_suggestions.get(self.path_suggestion_cursor).cloned() {
+                if let Some(suggestion) = self
+                    .path_suggestions
+                    .get(self.path_suggestion_cursor)
+                    .cloned()
+                {
                     self.input_buffer = suggestion;
-                    if crate::path_complete::is_directory(&self.input_buffer) {
-                        if !self.input_buffer.ends_with('/') {
-                            self.input_buffer.push('/');
-                        }
+                    if crate::path_complete::is_directory(&self.input_buffer)
+                        && !self.input_buffer.ends_with('/')
+                    {
+                        self.input_buffer.push('/');
                     }
                 }
                 self.refresh_path_suggestions();
@@ -562,10 +582,8 @@ impl App {
                         self.picker_cursor = self.hovered_group_picker_index(&picker);
                         self.picker_groups = picker;
                         self.input_mode = InputMode::GroupPicker;
-                        self.input_context = Some(InputContext::NewSessionGroup {
-                            name,
-                            cwd: buffer,
-                        });
+                        self.input_context =
+                            Some(InputContext::NewSessionGroup { name, cwd: buffer });
                     }
                     _ => {
                         // No groups — create ungrouped
@@ -585,9 +603,11 @@ impl App {
                         let _ = self.tmux.rename_session(old_tmux, &new_tmux_name);
                     }
                 }
-                if let Err(e) = self.db.update_session_name(&session_id, &buffer, &new_tmux_name) {
-                    self.status_message =
-                        Some((format!("rename failed: {e}"), Instant::now()));
+                if let Err(e) = self
+                    .db
+                    .update_session_name(&session_id, &buffer, &new_tmux_name)
+                {
+                    self.status_message = Some((format!("rename failed: {e}"), Instant::now()));
                 }
                 self.input_mode = InputMode::Normal;
                 self.input_buffer.clear();
@@ -595,8 +615,7 @@ impl App {
             }
             InputContext::RenameGroup { group_id } => {
                 if let Err(e) = self.db.rename_group(group_id, &buffer) {
-                    self.status_message =
-                        Some((format!("rename failed: {e}"), Instant::now()));
+                    self.status_message = Some((format!("rename failed: {e}"), Instant::now()));
                 }
                 self.input_mode = InputMode::Normal;
                 self.input_buffer.clear();
@@ -644,22 +663,23 @@ impl App {
 
     fn process_confirm(&mut self, ctx: InputContext) {
         match ctx {
-            InputContext::ConfirmDeleteSession { session_id, tmux_name } => {
+            InputContext::ConfirmDeleteSession {
+                session_id,
+                tmux_name,
+            } => {
                 // Kill tmux if active
                 if let Some(ref name) = tmux_name {
                     let _ = self.tmux.kill_session(name);
                 }
                 if let Err(e) = self.db.delete_session(&session_id) {
-                    self.status_message =
-                        Some((format!("delete failed: {e}"), Instant::now()));
+                    self.status_message = Some((format!("delete failed: {e}"), Instant::now()));
                 }
                 self.jsonl_snapshots.remove(&session_id);
                 self.refresh_tree();
             }
             InputContext::ConfirmDeleteGroup { group_id } => {
                 if let Err(e) = self.db.delete_group(group_id) {
-                    self.status_message =
-                        Some((format!("delete failed: {e}"), Instant::now()));
+                    self.status_message = Some((format!("delete failed: {e}"), Instant::now()));
                 }
                 self.refresh_tree();
             }
@@ -771,10 +791,15 @@ impl App {
                 // Walk the tree to find the parent group of this session
                 self.tree.iter().find_map(|node| {
                     if let TreeNode::Group(g) = node {
-                        let has_child = g.children.iter().any(|c| {
-                            matches!(c, TreeNode::Session(s) if s.session_id == *sid)
-                        });
-                        if has_child { Some(g.id) } else { None }
+                        let has_child = g
+                            .children
+                            .iter()
+                            .any(|c| matches!(c, TreeNode::Session(s) if s.session_id == *sid));
+                        if has_child {
+                            Some(g.id)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -799,8 +824,10 @@ impl App {
                     self.input_context = Some(InputContext::MoveSession { session_id: id });
                 }
                 Ok(_) => {
-                    self.status_message =
-                        Some(("No groups available. Create one with G".to_string(), Instant::now()));
+                    self.status_message = Some((
+                        "No groups available. Create one with G".to_string(),
+                        Instant::now(),
+                    ));
                 }
                 Err(e) => {
                     self.status_message =
@@ -814,8 +841,8 @@ impl App {
         let target = self.tree_state.selected_target(&self.tree);
         match target {
             Some(SelectionTarget::Session(id)) => {
-                let tmux_name = find_session_in_tree(&self.tree, &id)
-                    .and_then(|s| s.tmux_name.clone());
+                let tmux_name =
+                    find_session_in_tree(&self.tree, &id).and_then(|s| s.tmux_name.clone());
                 self.input_mode = InputMode::Confirm;
                 self.input_context = Some(InputContext::ConfirmDeleteSession {
                     session_id: id,
@@ -884,8 +911,7 @@ impl App {
                 self.ensure_session_launched();
             }
             Err(e) => {
-                self.status_message =
-                    Some((format!("create failed: {e}"), Instant::now()));
+                self.status_message = Some((format!("create failed: {e}"), Instant::now()));
             }
         }
     }
@@ -908,7 +934,11 @@ impl App {
                 // Already running — capture worker handles display
             }
             SessionStatus::Detached => {
-                let cwd = match session.cwd.as_ref().map(|p| p.to_string_lossy().to_string()) {
+                let cwd = match session
+                    .cwd
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                {
                     Some(c) => c,
                     None => return,
                 };
@@ -919,19 +949,23 @@ impl App {
 
                 // Snapshot before fresh launch so we can detect the new JSONL
                 if session.claude_session_id.is_none() {
-                    self.jsonl_snapshots.insert(
-                        session.session_id.clone(),
-                        snapshot_jsonl_stems(&cwd),
-                    );
+                    self.jsonl_snapshots
+                        .insert(session.session_id.clone(), snapshot_jsonl_stems(&cwd));
                 }
 
-                if let Err(e) = self.tmux.launch_claude_session(&tmux_name, &cwd, session.claude_session_id.as_deref()) {
+                if let Err(e) = self.tmux.launch_claude_session(
+                    &tmux_name,
+                    &cwd,
+                    session.claude_session_id.as_deref(),
+                ) {
                     self.status_message =
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
                     return;
                 }
                 let _ = self.tmux.configure_server();
-                let _ = self.db.update_session_status(&session.session_id, SessionStatus::Active);
+                let _ = self
+                    .db
+                    .update_session_status(&session.session_id, SessionStatus::Active);
                 self.refresh_tree();
                 // Re-sync so interactor switches from conversation log to live capture
                 self.refresh_cached_selected();
@@ -950,7 +984,11 @@ impl App {
     /// Suspend the TUI, attach to a tmux session, then restore the TUI.
     fn attach_tmux_session(&mut self, tmux_name: &str) {
         // Leave ratatui's alternate screen, raw mode, and bracketed paste so tmux can take over
-        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste
+        );
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
 
@@ -965,8 +1003,7 @@ impl App {
         self.needs_full_redraw = true;
 
         if let Err(e) = result {
-            self.status_message =
-                Some((format!("tmux attach failed: {e}"), Instant::now()));
+            self.status_message = Some((format!("tmux attach failed: {e}"), Instant::now()));
         }
 
         // Re-sync after fullscreen: the capture worker may have stopped during
@@ -989,7 +1026,11 @@ impl App {
             }
         };
 
-        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste
+        );
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
 
@@ -1036,8 +1077,7 @@ impl App {
     /// Scan active sessions that lack a `claude_session_id` and attempt to
     /// detect it from `~/.claude/projects/<project_dir>/`.
     fn detect_claude_session_ids(&mut self) {
-        let needs_detection: Vec<(String, String)> =
-            collect_sessions_needing_detection(&self.tree);
+        let needs_detection: Vec<(String, String)> = collect_sessions_needing_detection(&self.tree);
 
         if needs_detection.is_empty() {
             return;
@@ -1074,15 +1114,9 @@ impl App {
 
     fn refresh_cached_selected(&mut self) {
         self.cached_selected = match self.selection.selected.as_ref() {
-            Some(SelectionTarget::Session(id)) => {
-                find_session_in_tree(&self.tree, id).cloned()
-            }
+            Some(SelectionTarget::Session(id)) => find_session_in_tree(&self.tree, id).cloned(),
             _ => None,
         };
-    }
-
-    pub(crate) fn selected_session(&self) -> Option<&SessionSummary> {
-        self.cached_selected.as_ref()
     }
 
     pub(crate) fn session_counts(&self) -> (usize, usize) {
@@ -1112,14 +1146,10 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)
     for node in tree {
         match node {
             TreeNode::Session(s) => {
-                if s.claude_session_id.is_none()
-                    && s.cwd.is_some()
-                    && s.status != SessionStatus::Dead
-                {
-                    result.push((
-                        s.session_id.clone(),
-                        s.cwd.as_ref().unwrap().to_string_lossy().to_string(),
-                    ));
+                if s.claude_session_id.is_none() && s.status != SessionStatus::Dead {
+                    if let Some(cwd) = &s.cwd {
+                        result.push((s.session_id.clone(), cwd.to_string_lossy().to_string()));
+                    }
                 }
             }
             TreeNode::Group(g) => {
@@ -1134,16 +1164,22 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)
 /// Used before launching a fresh Claude session so we can later identify
 /// which JSONL file the new session created.
 fn snapshot_jsonl_stems(cwd: &str) -> HashSet<String> {
-    let project_dir_name = cwd.replace('/', "-").replace('.', "-");
-    let Some(project_dir) = dirs::home_dir().map(|h| h.join(".claude/projects").join(&project_dir_name)) else {
+    let project_dir_name = cwd.replace(['/', '.'], "-");
+    let Some(project_dir) =
+        dirs::home_dir().map(|h| h.join(".claude/projects").join(&project_dir_name))
+    else {
         return HashSet::new();
     };
     std::fs::read_dir(&project_dir)
         .into_iter()
         .flatten()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
-        .filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|e| {
+            e.path()
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+        })
         .collect()
 }
 
@@ -1155,7 +1191,7 @@ fn snapshot_jsonl_stems(cwd: &str) -> HashSet<String> {
 /// When `pre_launch` is `None`, falls back to "most recently modified" for
 /// backward compatibility (e.g., sessions restored from DB without a snapshot).
 fn detect_claude_session_id(cwd: &str, pre_launch: Option<&HashSet<String>>) -> Option<String> {
-    let project_dir_name = cwd.replace('/', "-").replace('.', "-");
+    let project_dir_name = cwd.replace(['/', '.'], "-");
     let project_dir = dirs::home_dir()?
         .join(".claude/projects")
         .join(&project_dir_name);
@@ -1163,11 +1199,7 @@ fn detect_claude_session_id(cwd: &str, pre_launch: Option<&HashSet<String>>) -> 
     let mut entries: Vec<_> = std::fs::read_dir(&project_dir)
         .ok()?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map_or(false, |ext| ext == "jsonl")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
         .collect();
 
     entries.sort_by(|a, b| {
@@ -1184,14 +1216,21 @@ fn detect_claude_session_id(cwd: &str, pre_launch: Option<&HashSet<String>>) -> 
 
     if let Some(snapshot) = pre_launch {
         // Find the first (newest) file NOT in the pre-launch snapshot
-        entries.iter()
-            .filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+        entries
+            .iter()
+            .filter_map(|e| {
+                e.path()
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+            })
             .find(|stem| !snapshot.contains(stem))
     } else {
         // Fallback: most recently modified
-        entries
-            .first()
-            .and_then(|e| e.path().file_stem().map(|s| s.to_string_lossy().to_string()))
+        entries.first().and_then(|e| {
+            e.path()
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+        })
     }
 }
 

@@ -151,10 +151,7 @@ socket_name = "custom-nexus"
 "#;
 
         let cfg = parse_and_validate(toml_str).unwrap();
-        assert_eq!(
-            cfg.general.db_path,
-            PathBuf::from("/custom/db/nexus.db")
-        );
+        assert_eq!(cfg.general.db_path, PathBuf::from("/custom/db/nexus.db"));
         assert_eq!(cfg.groups.len(), 2);
         assert_eq!(cfg.groups[0].name, "Work");
         assert_eq!(cfg.groups[0].icon, "briefcase");

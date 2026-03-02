@@ -50,11 +50,23 @@ impl TmuxManager {
     ///
     /// If `resume_id` is provided, launches `claude --resume <id>` so Claude
     /// Code picks up the previous conversation.
-    pub fn launch_claude_session(&self, name: &str, cwd: &str, resume_id: Option<&str>) -> Result<()> {
+    pub fn launch_claude_session(
+        &self,
+        name: &str,
+        cwd: &str,
+        resume_id: Option<&str>,
+    ) -> Result<()> {
         Self::validate_target(name)?;
         let mut cmd = Command::new("tmux");
-        cmd.args(["-L", &self.socket_name])
-            .args(["new-session", "-d", "-s", name, "-c", cwd, "claude"]);
+        cmd.args(["-L", &self.socket_name]).args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-c",
+            cwd,
+            "claude",
+        ]);
 
         if let Some(id) = resume_id {
             cmd.args(["--resume", id]);
@@ -236,7 +248,16 @@ impl TmuxManager {
         Self::validate_target(session_name)?;
         let output = Command::new("tmux")
             .args(["-L", &self.socket_name])
-            .args(["capture-pane", "-t", session_name, "-p", "-e", "-N", "-S", "-500"])
+            .args([
+                "capture-pane",
+                "-t",
+                session_name,
+                "-p",
+                "-e",
+                "-N",
+                "-S",
+                "-500",
+            ])
             .stderr(Stdio::null())
             .output()
             .wrap_err("failed to run tmux capture-pane")?;
@@ -386,7 +407,10 @@ impl TmuxManager {
         if name.is_empty() {
             bail!("session name cannot be empty");
         }
-        if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             Ok(())
         } else {
             bail!(
@@ -406,7 +430,13 @@ impl TmuxManager {
 /// Replaces any character outside `[a-zA-Z0-9-]` with `-`.
 pub fn sanitize_tmux_name(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -695,7 +725,8 @@ session-c:win3:0:\n";
         let mgr = TmuxManager::new("nexus-test-lk");
 
         // Launch claude session
-        mgr.launch_claude_session("test-sess", "/tmp", None).unwrap();
+        mgr.launch_claude_session("test-sess", "/tmp", None)
+            .unwrap();
 
         // Verify it appears in list
         let sessions = mgr.list_sessions().unwrap();

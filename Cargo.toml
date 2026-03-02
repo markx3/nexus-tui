@@ -2,7 +2,7 @@
 name = "nexus"
 version = "0.1.0"
 edition = "2021"
-description = "Cyberpunk TUI session manager for Claude Code"
+description = "TUI session manager for Claude Code"
 license = "MIT"
 authors = ["Marcos Felipe Eipper"]
 repository = "https://github.com/markx3/nexus-tui"

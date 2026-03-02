@@ -116,7 +116,9 @@ fn complete_with_parent(parent_dir: &str, prefix: &str, had_tilde: bool) -> Vec<
 
     // Sort: directories first, then alphabetical (case-insensitive)
     matches.sort_by(|(a_dir, a_name), (b_dir, b_name)| {
-        b_dir.cmp(a_dir).then_with(|| a_name.to_lowercase().cmp(&b_name.to_lowercase()))
+        b_dir
+            .cmp(a_dir)
+            .then_with(|| a_name.to_lowercase().cmp(&b_name.to_lowercase()))
     });
 
     matches.into_iter().map(|(_, name)| name).collect()
@@ -159,10 +161,7 @@ mod tests {
         if let Some(home) = dirs::home_dir() {
             let home_str = home.to_string_lossy().to_string();
             assert_eq!(collapse_tilde(&home_str), "~");
-            assert_eq!(
-                collapse_tilde(&format!("{home_str}/foo")),
-                "~/foo"
-            );
+            assert_eq!(collapse_tilde(&format!("{home_str}/foo")), "~/foo");
         }
     }
 

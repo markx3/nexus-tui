@@ -38,99 +38,99 @@ pub const PALETTE_NAMES: [&str; PALETTE_COUNT] = [
 const PALETTES: [Palette; PALETTE_COUNT] = [
     // 0: Current Baseline
     Palette {
-        bg:        Color::Rgb(11, 12, 16),
-        surface:   Color::Rgb(20, 23, 38),
-        text:      Color::Rgb(200, 211, 245),
-        dim:       Color::Rgb(74, 78, 105),
-        primary:   Color::Rgb(0, 229, 255),
+        bg: Color::Rgb(11, 12, 16),
+        surface: Color::Rgb(20, 23, 38),
+        text: Color::Rgb(200, 211, 245),
+        dim: Color::Rgb(74, 78, 105),
+        primary: Color::Rgb(0, 229, 255),
         secondary: Color::Rgb(57, 255, 20),
-        hazard:    Color::Rgb(247, 255, 74),
-        border:    Color::Rgb(40, 44, 72),
-        accent:    Color::Rgb(255, 0, 128),
+        hazard: Color::Rgb(247, 255, 74),
+        border: Color::Rgb(40, 44, 72),
+        accent: Color::Rgb(255, 0, 128),
     },
     // 1: Outrun Sunset
     Palette {
-        bg:        Color::Rgb(13, 2, 33),
-        surface:   Color::Rgb(21, 5, 53),
-        text:      Color::Rgb(224, 208, 255),
-        dim:       Color::Rgb(92, 77, 125),
-        primary:   Color::Rgb(235, 100, 185),
+        bg: Color::Rgb(13, 2, 33),
+        surface: Color::Rgb(21, 5, 53),
+        text: Color::Rgb(224, 208, 255),
+        dim: Color::Rgb(92, 77, 125),
+        primary: Color::Rgb(235, 100, 185),
         secondary: Color::Rgb(0, 240, 208),
-        hazard:    Color::Rgb(255, 200, 87),
-        border:    Color::Rgb(42, 22, 84),
-        accent:    Color::Rgb(255, 108, 17),
+        hazard: Color::Rgb(255, 200, 87),
+        border: Color::Rgb(42, 22, 84),
+        accent: Color::Rgb(255, 108, 17),
     },
     // 2: Cyberpunk 2077
     Palette {
-        bg:        Color::Rgb(10, 10, 15),
-        surface:   Color::Rgb(20, 20, 30),
-        text:      Color::Rgb(232, 232, 204),
-        dim:       Color::Rgb(90, 90, 74),
-        primary:   Color::Rgb(243, 230, 0),
+        bg: Color::Rgb(10, 10, 15),
+        surface: Color::Rgb(20, 20, 30),
+        text: Color::Rgb(232, 232, 204),
+        dim: Color::Rgb(90, 90, 74),
+        primary: Color::Rgb(243, 230, 0),
         secondary: Color::Rgb(0, 240, 255),
-        hazard:    Color::Rgb(255, 0, 60),
-        border:    Color::Rgb(42, 42, 56),
-        accent:    Color::Rgb(189, 0, 255),
+        hazard: Color::Rgb(255, 0, 60),
+        border: Color::Rgb(42, 42, 56),
+        accent: Color::Rgb(189, 0, 255),
     },
     // 3: Blade Runner 2049
     Palette {
-        bg:        Color::Rgb(12, 10, 8),
-        surface:   Color::Rgb(26, 22, 16),
-        text:      Color::Rgb(212, 197, 169),
-        dim:       Color::Rgb(107, 93, 69),
-        primary:   Color::Rgb(247, 139, 4),
+        bg: Color::Rgb(12, 10, 8),
+        surface: Color::Rgb(26, 22, 16),
+        text: Color::Rgb(212, 197, 169),
+        dim: Color::Rgb(107, 93, 69),
+        primary: Color::Rgb(247, 139, 4),
         secondary: Color::Rgb(79, 193, 233),
-        hazard:    Color::Rgb(255, 61, 61),
-        border:    Color::Rgb(51, 41, 29),
-        accent:    Color::Rgb(201, 93, 30),
+        hazard: Color::Rgb(255, 61, 61),
+        border: Color::Rgb(51, 41, 29),
+        accent: Color::Rgb(201, 93, 30),
     },
     // 4: Neon Deep Ocean
     Palette {
-        bg:        Color::Rgb(3, 11, 16),
-        surface:   Color::Rgb(8, 24, 32),
-        text:      Color::Rgb(184, 216, 224),
-        dim:       Color::Rgb(60, 90, 102),
-        primary:   Color::Rgb(10, 189, 198),
+        bg: Color::Rgb(3, 11, 16),
+        surface: Color::Rgb(8, 24, 32),
+        text: Color::Rgb(184, 216, 224),
+        dim: Color::Rgb(60, 90, 102),
+        primary: Color::Rgb(10, 189, 198),
         secondary: Color::Rgb(234, 0, 217),
-        hazard:    Color::Rgb(255, 230, 109),
-        border:    Color::Rgb(21, 48, 64),
-        accent:    Color::Rgb(113, 243, 65),
+        hazard: Color::Rgb(255, 230, 109),
+        border: Color::Rgb(21, 48, 64),
+        accent: Color::Rgb(113, 243, 65),
     },
     // 5: Synthwave Nights
     Palette {
-        bg:        Color::Rgb(11, 14, 20),
-        surface:   Color::Rgb(19, 24, 34),
-        text:      Color::Rgb(172, 189, 211),
-        dim:       Color::Rgb(73, 90, 115),
-        primary:   Color::Rgb(4, 172, 238),
+        bg: Color::Rgb(11, 14, 20),
+        surface: Color::Rgb(19, 24, 34),
+        text: Color::Rgb(172, 189, 211),
+        dim: Color::Rgb(73, 90, 115),
+        primary: Color::Rgb(4, 172, 238),
         secondary: Color::Rgb(247, 110, 153),
-        hazard:    Color::Rgb(255, 209, 102),
-        border:    Color::Rgb(31, 42, 62),
-        accent:    Color::Rgb(54, 245, 199),
+        hazard: Color::Rgb(255, 209, 102),
+        border: Color::Rgb(31, 42, 62),
+        accent: Color::Rgb(54, 245, 199),
     },
     // 6: Retrowave Pure (default)
     Palette {
-        bg:        Color::Rgb(14, 5, 32),
-        surface:   Color::Rgb(23, 10, 48),
-        text:      Color::Rgb(216, 200, 248),
-        dim:       Color::Rgb(94, 76, 128),
-        primary:   Color::Rgb(131, 56, 236),
+        bg: Color::Rgb(14, 5, 32),
+        surface: Color::Rgb(23, 10, 48),
+        text: Color::Rgb(216, 200, 248),
+        dim: Color::Rgb(94, 76, 128),
+        primary: Color::Rgb(131, 56, 236),
         secondary: Color::Rgb(255, 0, 110),
-        hazard:    Color::Rgb(255, 190, 11),
-        border:    Color::Rgb(45, 24, 80),
-        accent:    Color::Rgb(58, 134, 255),
+        hazard: Color::Rgb(255, 190, 11),
+        border: Color::Rgb(45, 24, 80),
+        accent: Color::Rgb(58, 134, 255),
     },
     // 7: Matrix Phosphor
     Palette {
-        bg:        Color::Rgb(5, 8, 5),
-        surface:   Color::Rgb(10, 18, 10),
-        text:      Color::Rgb(168, 213, 160),
-        dim:       Color::Rgb(58, 92, 58),
-        primary:   Color::Rgb(0, 255, 65),
+        bg: Color::Rgb(5, 8, 5),
+        surface: Color::Rgb(10, 18, 10),
+        text: Color::Rgb(168, 213, 160),
+        dim: Color::Rgb(58, 92, 58),
+        primary: Color::Rgb(0, 255, 65),
         secondary: Color::Rgb(0, 187, 48),
-        hazard:    Color::Rgb(255, 215, 0),
-        border:    Color::Rgb(26, 46, 26),
-        accent:    Color::Rgb(64, 224, 208),
+        hazard: Color::Rgb(255, 215, 0),
+        border: Color::Rgb(26, 46, 26),
+        accent: Color::Rgb(64, 224, 208),
     },
 ];
 
@@ -169,15 +169,33 @@ pub fn prev_theme() -> usize {
 
 // ── Color accessor functions ────────────────────────────────────────
 
-pub fn bg() -> Color { active_palette().bg }
-pub fn surface() -> Color { active_palette().surface }
-pub fn text() -> Color { active_palette().text }
-pub fn dim() -> Color { active_palette().dim }
-pub fn primary() -> Color { active_palette().primary }
-pub fn secondary() -> Color { active_palette().secondary }
-pub fn hazard() -> Color { active_palette().hazard }
-pub fn border() -> Color { active_palette().border }
-pub fn accent() -> Color { active_palette().accent }
+pub fn bg() -> Color {
+    active_palette().bg
+}
+pub fn surface() -> Color {
+    active_palette().surface
+}
+pub fn text() -> Color {
+    active_palette().text
+}
+pub fn dim() -> Color {
+    active_palette().dim
+}
+pub fn primary() -> Color {
+    active_palette().primary
+}
+pub fn secondary() -> Color {
+    active_palette().secondary
+}
+pub fn hazard() -> Color {
+    active_palette().hazard
+}
+pub fn border() -> Color {
+    active_palette().border
+}
+pub fn accent() -> Color {
+    active_palette().accent
+}
 
 /// Derive a selection highlight background by brightening `surface`.
 pub fn derive_selection_bg() -> Color {
@@ -223,9 +241,7 @@ pub fn style_for(element: ThemeElement) -> Style {
         ThemeElement::Border => Style::new().fg(border()),
         ThemeElement::ActiveSession => Style::new().fg(secondary()),
         ThemeElement::IdleSession => Style::new().fg(dim()),
-        ThemeElement::SelectedItem => Style::new()
-            .bg(derive_selection_bg())
-            .fg(primary()),
+        ThemeElement::SelectedItem => Style::new().bg(derive_selection_bg()).fg(primary()),
         ThemeElement::FocusedBorder => Style::new().fg(primary()),
         ThemeElement::UnfocusedBorder => Style::new().fg(border()),
         ThemeElement::TreeIndent => Style::new().fg(border()),
@@ -317,10 +333,7 @@ mod tests {
         let default_style = Style::default();
         for element in &elements {
             let style = style_for(*element);
-            assert_ne!(
-                style, default_style,
-                "{element:?} returned a default style"
-            );
+            assert_ne!(style, default_style, "{element:?} returned a default style");
         }
     }
 
@@ -395,9 +408,15 @@ mod tests {
     fn all_palettes_have_rgb_colors() {
         for (i, palette) in PALETTES.iter().enumerate() {
             let colors = [
-                palette.bg, palette.surface, palette.text, palette.dim,
-                palette.primary, palette.secondary, palette.hazard,
-                palette.border, palette.accent,
+                palette.bg,
+                palette.surface,
+                palette.text,
+                palette.dim,
+                palette.primary,
+                palette.secondary,
+                palette.hazard,
+                palette.border,
+                palette.accent,
             ];
             for color in &colors {
                 assert!(
