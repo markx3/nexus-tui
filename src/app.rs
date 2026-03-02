@@ -896,13 +896,11 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.finder_state.query.pop();
-                let q = self.finder_state.query.clone();
-                self.finder_state.update_query(q);
+                self.finder_state.refilter();
             }
             KeyCode::Char(c) => {
                 self.finder_state.query.push(c);
-                let q = self.finder_state.query.clone();
-                self.finder_state.update_query(q);
+                self.finder_state.refilter();
             }
             _ => {}
         }

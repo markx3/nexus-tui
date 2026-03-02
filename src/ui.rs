@@ -401,9 +401,9 @@ fn render_finder(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let results = app.finder_state.results();
+    let result_count = app.finder_state.result_count();
     let max_visible = (area.height * 40 / 100).max(5) as usize;
-    let visible_count = results.len().min(max_visible);
+    let visible_count = result_count.min(max_visible);
     // +4 for borders (2) + input row (1) + hints row (1)
     let content_height = (visible_count as u16 + 4).min(area.height);
     let content_width = (area.width * 60 / 100).max(40).min(area.width);
@@ -442,6 +442,7 @@ fn render_finder(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("_", Style::new().fg(theme::primary())),
     ]));
 
+    let results = app.finder_state.results();
     if results.is_empty() {
         // Empty state
         let msg = if app.finder_state.query.is_empty() {
