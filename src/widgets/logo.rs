@@ -514,12 +514,13 @@ mod tests {
     #[test]
     fn logo_state_reseeds_after_cycle_len() {
         let mut state = LogoState::new();
-        // First advance seeds, then CYCLE_LEN more advances should trigger reseed
-        for _ in 0..=CYCLE_LEN {
-            state.advance(20, 9);
-        }
+        // Seed the grid with an initial advance
+        state.advance(20, 9);
+        // Force frame_count to the cycle limit to test the reseed path directly,
+        // avoiding flakiness from stagnation resets during iteration.
+        state.frame_count = CYCLE_LEN;
         let grid_before = state.grid.clone();
-        // Next advance hits frame_count >= CYCLE_LEN (or stagnation), must reseed
+        // Next advance hits frame_count >= CYCLE_LEN, must reseed
         state.advance(20, 9);
         // After reseed, frame_count resets to 0
         assert_eq!(state.frame_count, 0);
