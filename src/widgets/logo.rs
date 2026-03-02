@@ -524,6 +524,9 @@ mod tests {
         // After reseed, frame_count resets to 0
         assert_eq!(state.frame_count, 0);
         // Grid should differ (random reseed vs settled state — vanishingly unlikely to match)
-        assert_ne!(grid_before, state.grid, "Grid should change after forced reseed");
+        assert_ne!(
+            grid_before, state.grid,
+            "Grid should change after forced reseed"
+        );
     }
 }
