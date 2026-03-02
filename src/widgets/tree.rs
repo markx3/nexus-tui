@@ -162,12 +162,7 @@ pub fn render_tree(
                 ];
 
                 // Show status tag for non-active
-                if summary.status == SessionStatus::Detached {
-                    spans.push(Span::styled(
-                        " [detached]",
-                        Style::new().fg(theme::dim()).add_modifier(Modifier::DIM),
-                    ));
-                } else if summary.status == SessionStatus::Dead {
+                if summary.status == SessionStatus::Dead {
                     spans.push(Span::styled(
                         " [dead]",
                         Style::new().fg(theme::dim()).add_modifier(Modifier::DIM),
