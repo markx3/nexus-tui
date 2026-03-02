@@ -42,27 +42,131 @@ const SEED_OFFSETS: &[(isize, isize)] = &[
 ];
 
 #[cfg(test)]
-fn gol_seed(width: usize, height: usize) -> Vec<Vec<bool>> {
-    let mut grid = vec![vec![false; width]; height];
+fn gol_seed(width: usize, height: usize) -> Vec<Vec<u8>> {
+    let mut grid = vec![vec![0u8; width]; height];
     let cx = width as isize / 2;
     let cy = height as isize / 2;
 
     for &(dx, dy) in SEED_OFFSETS {
         let x = (cx + dx).rem_euclid(width as isize) as usize;
         let y = (cy + dy).rem_euclid(height as isize) as usize;
-        grid[y][x] = true;
+        grid[y][x] = 1;
     }
     grid
 }
 
-fn random_seed(width: usize, height: usize) -> Vec<Vec<bool>> {
+/// Famous methuselah patterns as (dx, dy) offsets from center.
+const KNOWN_SEEDS: &[&[(isize, isize)]] = &[
+    // R-pentomino (chaotic, long-lived)
+    &[(0, -1), (1, -1), (-1, 0), (0, 0), (0, 1)],
+    // Acorn (chaotic, very long-lived)
+    &[(-2, -1), (0, 0), (-3, 1), (-2, 1), (1, 1), (2, 1), (3, 1)],
+    // Die Hard (dies after ~130 generations)
+    &[(3, -1), (-3, 0), (-2, 0), (-2, 1), (2, 1), (3, 1), (4, 1)],
+    // Pi-heptomino (symmetric chaos)
+    &[(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (1, 1)],
+    // Thunderbird (symmetric, long transient)
+    &[(-1, -2), (0, -2), (1, -2), (0, 0), (0, 1), (0, 2)],
+    // B-heptomino (148 gens)
+    &[
+        (-2, -1),
+        (0, -1),
+        (1, -1),
+        (-2, 0),
+        (-1, 0),
+        (0, 0),
+        (-1, 1),
+    ],
+    // Herschel (128 gens)
+    &[(-1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (1, 1), (1, 2)],
+    // Century (103 gens)
+    &[(0, -1), (1, -1), (-2, 0), (-1, 0), (0, 0), (-1, 1)],
+    // Stairstep hexomino (63 gens)
+    &[(-2, -1), (-1, -1), (-1, 0), (0, 0), (0, 1), (1, 1)],
+    // Wing (62 gens)
+    &[
+        (-1, -2),
+        (0, -2),
+        (-2, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (0, 1),
+        (1, 1),
+    ],
+    // Blom (23314 gens)
+    &[
+        (-6, -2),
+        (5, -2),
+        (-5, -1),
+        (-4, -1),
+        (-3, -1),
+        (-2, -1),
+        (5, -1),
+        (-4, 0),
+        (-3, 0),
+        (5, 0),
+        (4, 1),
+        (2, 2),
+        (4, 2),
+    ],
+    // Rabbits (17331 gens)
+    &[
+        (-3, -1),
+        (1, -1),
+        (2, -1),
+        (3, -1),
+        (-3, 0),
+        (-2, 0),
+        (-1, 0),
+        (2, 0),
+        (-2, 1),
+    ],
+    // Bunnies (17332 gens)
+    &[
+        (-4, -2),
+        (2, -2),
+        (-2, -1),
+        (2, -1),
+        (-2, 0),
+        (1, 0),
+        (3, 0),
+        (-3, 1),
+        (-1, 1),
+    ],
+    // Lidka (29055 gens)
+    &[
+        (-3, -7),
+        (-4, -6),
+        (-2, -6),
+        (-3, -5),
+        (4, 3),
+        (2, 4),
+        (4, 4),
+        (1, 5),
+        (2, 5),
+        (4, 5),
+        (0, 7),
+        (1, 7),
+        (2, 7),
+    ],
+];
+
+fn curated_seed(width: usize, height: usize) -> Vec<Vec<u8>> {
     let mut rng = rand::rng();
-    (0..height)
-        .map(|_| (0..width).map(|_| rng.random_bool(0.35)).collect())
-        .collect()
+    let pattern = KNOWN_SEEDS[rng.random_range(0..KNOWN_SEEDS.len())];
+    let mut grid = vec![vec![0u8; width]; height];
+    let cx = width as isize / 2;
+    let cy = height as isize / 2;
+    for &(dx, dy) in pattern {
+        let x = (cx + dx).rem_euclid(width as isize) as usize;
+        let y = (cy + dy).rem_euclid(height as isize) as usize;
+        grid[y][x] = 1;
+    }
+    grid
 }
 
-fn count_neighbors(grid: &[Vec<bool>], x: usize, y: usize) -> u8 {
+fn count_neighbors(grid: &[Vec<u8>], x: usize, y: usize) -> u8 {
     let h = grid.len() as isize;
     let w = grid[0].len() as isize;
     let mut count = 0u8;
@@ -73,7 +177,7 @@ fn count_neighbors(grid: &[Vec<bool>], x: usize, y: usize) -> u8 {
             }
             let nx = (x as isize + dx).rem_euclid(w) as usize;
             let ny = (y as isize + dy).rem_euclid(h) as usize;
-            if grid[ny][nx] {
+            if grid[ny][nx] > 0 {
                 count += 1;
             }
         }
@@ -81,14 +185,19 @@ fn count_neighbors(grid: &[Vec<bool>], x: usize, y: usize) -> u8 {
     count
 }
 
-fn gol_step(grid: &[Vec<bool>]) -> Vec<Vec<bool>> {
+fn gol_step(grid: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let h = grid.len();
     let w = grid[0].len();
-    let mut next = vec![vec![false; w]; h];
+    let mut next = vec![vec![0u8; w]; h];
     for y in 0..h {
         for x in 0..w {
             let n = count_neighbors(grid, x, y);
-            next[y][x] = matches!((grid[y][x], n), (true, 2) | (true, 3) | (false, 3));
+            let alive = grid[y][x] > 0;
+            next[y][x] = match (alive, n) {
+                (true, 2) | (true, 3) => grid[y][x].saturating_add(1),
+                (false, 3) => 1,
+                _ => 0,
+            };
         }
     }
     next
@@ -107,9 +216,22 @@ fn symbol_for(x: usize, y: usize) -> char {
 // LogoState — cached Game of Life grid (one step per frame, not replay)
 // ---------------------------------------------------------------------------
 
+/// Compare alive/dead status only (ignoring age values).
+fn same_pattern(a: &[Vec<u8>], b: &[Vec<u8>]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(ra, rb)| {
+        ra.iter()
+            .zip(rb.iter())
+            .all(|(&ca, &cb)| (ca > 0) == (cb > 0))
+    })
+}
+
 pub struct LogoState {
-    grid: Vec<Vec<bool>>,
-    prev_grid: Vec<Vec<bool>>,
+    pub(crate) grid: Vec<Vec<u8>>,
+    prev_grid: Vec<Vec<u8>>,
+    prev2_grid: Vec<Vec<u8>>,
     width: usize,
     height: usize,
     frame_count: usize,
@@ -120,6 +242,7 @@ impl LogoState {
         Self {
             grid: Vec::new(),
             prev_grid: Vec::new(),
+            prev2_grid: Vec::new(),
             width: 0,
             height: 0,
             frame_count: 0,
@@ -128,17 +251,19 @@ impl LogoState {
 
     /// Advance the GoL simulation by one step.
     ///
-    /// Re-seeds on: size change, cycle limit, stagnation (grid == prev), or all dead.
+    /// Re-seeds on: size change, cycle limit, stagnation (period-1 or period-2), or all dead.
     pub fn advance(&mut self, width: usize, height: usize) {
         if width != self.width || height != self.height || width < 5 || height < 3 {
             self.width = width;
             self.height = height;
             if width >= 5 && height >= 3 {
-                self.grid = random_seed(width, height);
+                self.grid = curated_seed(width, height);
                 self.prev_grid = Vec::new();
+                self.prev2_grid = Vec::new();
             } else {
                 self.grid = Vec::new();
                 self.prev_grid = Vec::new();
+                self.prev2_grid = Vec::new();
             }
             self.frame_count = 0;
             return;
@@ -146,29 +271,42 @@ impl LogoState {
 
         // Forced reseed after CYCLE_LEN frames
         if self.frame_count >= CYCLE_LEN {
-            self.grid = random_seed(width, height);
+            self.grid = curated_seed(width, height);
             self.prev_grid = Vec::new();
+            self.prev2_grid = Vec::new();
             self.frame_count = 0;
             return;
         }
 
-        // Stagnation: grid unchanged from previous step (stable pattern)
-        if self.grid == self.prev_grid {
-            self.grid = random_seed(width, height);
+        // Stagnation: alive/dead pattern unchanged from previous step (period-1)
+        if same_pattern(&self.grid, &self.prev_grid) {
+            self.grid = curated_seed(width, height);
             self.prev_grid = Vec::new();
+            self.prev2_grid = Vec::new();
+            self.frame_count = 0;
+            return;
+        }
+
+        // Period-2 stagnation (blinkers): alive/dead pattern same as 2 frames ago
+        if same_pattern(&self.grid, &self.prev2_grid) {
+            self.grid = curated_seed(width, height);
+            self.prev_grid = Vec::new();
+            self.prev2_grid = Vec::new();
             self.frame_count = 0;
             return;
         }
 
         // All dead
-        let any_alive = self.grid.iter().any(|row| row.iter().any(|&c| c));
+        let any_alive = self.grid.iter().any(|row| row.iter().any(|&c| c > 0));
         if !any_alive {
-            self.grid = random_seed(width, height);
+            self.grid = curated_seed(width, height);
             self.prev_grid = Vec::new();
+            self.prev2_grid = Vec::new();
             self.frame_count = 0;
             return;
         }
 
+        self.prev2_grid = std::mem::take(&mut self.prev_grid);
         self.prev_grid = self.grid.clone();
         self.grid = gol_step(&self.grid);
         self.frame_count += 1;
@@ -179,46 +317,31 @@ impl LogoState {
 // Frame generation (from cached state)
 // ---------------------------------------------------------------------------
 
-fn state_to_char_grid(state: &LogoState) -> Vec<Vec<char>> {
+/// A char grid cell with its GoL age (0 = dead).
+struct CharCell {
+    ch: char,
+    age: u8,
+}
+
+fn state_to_char_cells(state: &LogoState) -> Vec<Vec<CharCell>> {
     let width = state.width;
     let height = state.height;
-    let mut grid = vec![vec![' '; width]; height];
+    let mut grid: Vec<Vec<CharCell>> = (0..height)
+        .map(|_| (0..width).map(|_| CharCell { ch: ' ', age: 0 }).collect())
+        .collect();
 
     if width < 5 || height < 3 {
         return grid;
     }
 
-    // Convert live cells to display chars
+    // Convert live cells to display chars with age
     for (y, (grid_row, state_row)) in grid.iter_mut().zip(state.grid.iter()).enumerate() {
-        for (x, (cell, &alive)) in grid_row.iter_mut().zip(state_row.iter()).enumerate() {
-            if alive {
-                *cell = symbol_for(x, y);
+        for (x, (cell, &age)) in grid_row.iter_mut().zip(state_row.iter()).enumerate() {
+            if age > 0 {
+                cell.ch = symbol_for(x, y);
+                cell.age = age;
             }
         }
-    }
-
-    // Overlay static crosshair at center
-    let cxi = width / 2;
-    let cyi = height / 2;
-
-    if cyi < height && cxi < width {
-        grid[cyi][cxi] = '◉';
-    }
-    if cyi < height && cxi >= 2 && cxi + 2 < width {
-        grid[cyi][cxi - 2] = '─';
-        grid[cyi][cxi - 1] = '─';
-        grid[cyi][cxi + 1] = '─';
-        grid[cyi][cxi + 2] = '─';
-    }
-    if cxi < width && cyi >= 1 && cyi + 1 < height {
-        grid[cyi - 1][cxi] = '┼';
-        grid[cyi + 1][cxi] = '┼';
-    }
-    if cxi >= 1 && cxi + 1 < width && cyi >= 1 && cyi + 1 < height {
-        grid[cyi - 1][cxi - 1] = '─';
-        grid[cyi - 1][cxi + 1] = '─';
-        grid[cyi + 1][cxi - 1] = '─';
-        grid[cyi + 1][cxi + 1] = '─';
     }
 
     grid
@@ -241,33 +364,10 @@ fn generate_frame(width: usize, height: usize, frame_index: usize) -> Vec<Vec<ch
 
     for y in 0..height {
         for x in 0..width {
-            if state[y][x] {
+            if state[y][x] > 0 {
                 grid[y][x] = symbol_for(x, y);
             }
         }
-    }
-
-    let cxi = width / 2;
-    let cyi = height / 2;
-
-    if cyi < height && cxi < width {
-        grid[cyi][cxi] = '◉';
-    }
-    if cyi < height && cxi >= 2 && cxi + 2 < width {
-        grid[cyi][cxi - 2] = '─';
-        grid[cyi][cxi - 1] = '─';
-        grid[cyi][cxi + 1] = '─';
-        grid[cyi][cxi + 2] = '─';
-    }
-    if cxi < width && cyi >= 1 && cyi + 1 < height {
-        grid[cyi - 1][cxi] = '┼';
-        grid[cyi + 1][cxi] = '┼';
-    }
-    if cxi >= 1 && cxi + 1 < width && cyi >= 1 && cyi + 1 < height {
-        grid[cyi - 1][cxi - 1] = '─';
-        grid[cyi - 1][cxi + 1] = '─';
-        grid[cyi + 1][cxi - 1] = '─';
-        grid[cyi + 1][cxi + 1] = '─';
     }
 
     grid
@@ -296,22 +396,27 @@ pub fn render_logo(frame: &mut Frame, area: Rect, logo_state: &LogoState) {
         return;
     }
 
-    let grid = state_to_char_grid(logo_state);
+    let grid = state_to_char_cells(logo_state);
 
     let agent_style = theme::style_for(ThemeElement::LogoAgent);
-    let nexus_style = theme::style_for(ThemeElement::LogoNexus);
+    let primary_style = Style::new().fg(theme::primary());
+    let secondary_style = Style::new().fg(theme::secondary());
 
     let lines: Vec<Line> = grid
         .iter()
         .map(|row| {
             let spans: Vec<Span> = row
                 .iter()
-                .map(|&ch| match ch {
-                    '◉' => Span::styled(ch.to_string(), nexus_style),
-                    '∙' | '◆' | '·' | '─' | '│' | '┼' => {
-                        Span::styled(ch.to_string(), agent_style)
+                .map(|cell| match cell.ch {
+                    '∙' | '◆' | '·' => {
+                        let style = match cell.age {
+                            1..=3 => secondary_style,
+                            4..=10 => primary_style,
+                            _ => agent_style,
+                        };
+                        Span::styled(cell.ch.to_string(), style)
                     }
-                    _ => Span::styled(ch.to_string(), Style::default()),
+                    _ => Span::styled(cell.ch.to_string(), Style::default()),
                 })
                 .collect();
             Line::from(spans)
@@ -406,25 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn generate_frame_places_nexus_at_center() {
-        let grid = generate_frame(16, 7, 0);
-        let cx = 8;
-        let cy = 3;
-        assert_eq!(grid[cy][cx], '◉');
-    }
-
-    #[test]
-    fn generate_frame_has_crosshair() {
-        let grid = generate_frame(16, 7, 0);
-        let cx = 8;
-        let cy = 3;
-        assert_eq!(grid[cy][cx - 1], '─');
-        assert_eq!(grid[cy][cx + 1], '─');
-        assert_eq!(grid[cy - 1][cx], '┼');
-        assert_eq!(grid[cy + 1][cx], '┼');
-    }
-
-    #[test]
     fn generate_frame_tiny_grid() {
         let grid = generate_frame(3, 2, 0);
         assert_eq!(grid.len(), 2);
@@ -441,37 +527,41 @@ mod tests {
     #[test]
     fn gol_step_blinker_oscillates() {
         // Blinker: horizontal → vertical → horizontal
-        let mut grid = vec![vec![false; 5]; 5];
-        grid[2][1] = true;
-        grid[2][2] = true;
-        grid[2][3] = true;
+        let mut grid = vec![vec![0u8; 5]; 5];
+        grid[2][1] = 1;
+        grid[2][2] = 1;
+        grid[2][3] = 1;
         let next = gol_step(&grid);
         // Should become vertical
-        assert!(!next[2][1]);
-        assert!(next[1][2]);
-        assert!(next[2][2]);
-        assert!(next[3][2]);
-        assert!(!next[2][3]);
-        // Step again → back to horizontal
+        assert_eq!(next[2][1], 0);
+        assert!(next[1][2] > 0);
+        assert!(next[2][2] > 0);
+        assert!(next[3][2] > 0);
+        assert_eq!(next[2][3], 0);
+        // Step again → back to horizontal (same alive/dead pattern)
         let next2 = gol_step(&next);
-        assert_eq!(grid, next2);
+        assert!(same_pattern(&grid, &next2));
     }
 
     #[test]
     fn gol_step_block_is_stable() {
-        let mut grid = vec![vec![false; 6]; 6];
-        grid[2][2] = true;
-        grid[2][3] = true;
-        grid[3][2] = true;
-        grid[3][3] = true;
+        let mut grid = vec![vec![0u8; 6]; 6];
+        grid[2][2] = 1;
+        grid[2][3] = 1;
+        grid[3][2] = 1;
+        grid[3][3] = 1;
         let next = gol_step(&grid);
-        assert_eq!(grid, next);
+        assert!(same_pattern(&grid, &next));
     }
 
     #[test]
     fn gol_seed_has_live_cells() {
         let state = gol_seed(20, 9);
-        let live: usize = state.iter().flat_map(|r| r.iter()).filter(|&&c| c).count();
+        let live: usize = state
+            .iter()
+            .flat_map(|r| r.iter())
+            .filter(|&&c| c > 0)
+            .count();
         assert!(live > 0, "Seed should have live cells");
         assert_eq!(live, SEED_OFFSETS.len());
     }
