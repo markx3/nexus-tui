@@ -8,6 +8,7 @@ use crossterm::event::{
     MouseEventKind,
 };
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use tachyonfx::Effect;
 
@@ -20,7 +21,7 @@ use crate::types::*;
 use crate::ui;
 use crate::widgets::interactor_state::InteractorState;
 use crate::widgets::logo::LogoState;
-use crate::widgets::tree_state::{TreeAction, TreeState};
+use crate::widgets::tree_state::{FlatNodeKind, TreeAction, TreeState};
 
 const TICK_RATE: Duration = Duration::from_millis(16);
 const TMUX_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -91,6 +92,9 @@ pub struct App {
     logo_last_advance: Instant,
     // Pre-launch JSONL snapshots: nexus session_id → set of JSONL stems before launch
     jsonl_snapshots: HashMap<String, HashSet<String>>,
+    // Layout rects for mouse hit-testing (populated during draw)
+    pub(crate) area_tree: Rect,
+    pub(crate) area_theme_label: Rect,
 }
 
 impl App {
@@ -162,6 +166,8 @@ impl App {
             logo_state: LogoState::new(),
             logo_last_advance: Instant::now(),
             jsonl_snapshots: HashMap::new(),
+            area_tree: Rect::default(),
+            area_theme_label: Rect::default(),
         }
     }
 
@@ -250,7 +256,12 @@ impl App {
                 let ev = event::read()?;
                 let skip_redraw = matches!(
                     &ev,
-                    Event::Mouse(m) if !matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown)
+                    Event::Mouse(m) if !matches!(
+                        m.kind,
+                        MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown
+                            | MouseEventKind::Down(_)
+                    )
                 );
                 self.handle_event(ev);
                 if !skip_redraw {
@@ -272,7 +283,10 @@ impl App {
                         is.handle_mouse_scroll(mouse.kind);
                     }
                 }
-                _ => {} // drop mouse-move / click — avoids unnecessary redraws
+                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                    self.handle_mouse_click(mouse.column, mouse.row);
+                }
+                _ => {} // drop mouse-move / right-click — avoids unnecessary redraws
             }
             return;
         }
@@ -439,6 +453,77 @@ impl App {
                 if let Some(action) = self.tree_state.handle_key(key, &self.tree) {
                     self.handle_tree_action(action);
                 }
+            }
+        }
+    }
+
+    fn handle_mouse_click(&mut self, col: u16, row: u16) {
+        if self.input_mode != InputMode::Normal || self.show_help {
+            return;
+        }
+
+        // Top bar: theme label
+        let r = self.area_theme_label;
+        if r.width > 0 && row >= r.y && row < r.y + r.height && col >= r.x && col < r.x + r.width {
+            self.dispatch_nexus_command(NexusCommand::NextTheme);
+            return;
+        }
+
+        // Tree panel
+        let inner = self.area_tree;
+        if inner.width > 0
+            && col >= inner.x
+            && col < inner.x + inner.width
+            && row >= inner.y
+            && row < inner.y + inner.height
+        {
+            self.handle_tree_click(row, inner);
+        }
+    }
+
+    fn handle_tree_click(&mut self, row: u16, inner: Rect) {
+        let flat = self.tree_state.visible_nodes(&self.tree);
+        if flat.is_empty() {
+            return;
+        }
+
+        let viewport_h = inner.height as usize;
+        let start = self.tree_state.scroll_offset;
+        let end = (start + viewport_h).min(flat.len());
+
+        // Mirror tree.rs scroll indicator logic
+        let content_start = if start > 0 { 1usize } else { 0 };
+        let content_end_budget = if end < flat.len() { 1usize } else { 0 };
+        let content_slots = viewport_h.saturating_sub(content_start + content_end_budget);
+
+        let rel_row = (row - inner.y) as usize;
+
+        // Ignore clicks on scroll indicator rows
+        if start > 0 && rel_row < content_start {
+            return;
+        }
+        if end < flat.len() && rel_row >= content_start + content_slots {
+            return;
+        }
+
+        let flat_idx = start + content_start + (rel_row - content_start);
+        let actual_end = (start + content_start + content_slots).min(flat.len());
+        if flat_idx >= actual_end {
+            return;
+        }
+
+        // Move cursor and dispatch via existing handle_tree_action flow
+        self.tree_state.cursor_index = flat_idx;
+
+        match &flat[flat_idx].node {
+            FlatNodeKind::Group { id, .. } => {
+                let gid = *id;
+                self.handle_tree_action(TreeAction::Select(SelectionTarget::Group(gid)));
+                self.tree_state.toggle_expand(gid);
+            }
+            FlatNodeKind::Session { summary } => {
+                let sid = summary.session_id.clone();
+                self.handle_tree_action(TreeAction::Select(SelectionTarget::Session(sid)));
             }
         }
     }

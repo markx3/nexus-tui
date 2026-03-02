@@ -23,6 +23,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         let msg = Paragraph::new("Terminal too small. Minimum: 80x24")
             .style(Style::new().fg(theme::hazard()).bg(theme::bg()));
         frame.render_widget(msg, area);
+        app.area_tree = Rect::default();
+        app.area_theme_label = Rect::default();
         return;
     }
 
@@ -46,9 +48,18 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         (left_panel, None)
     };
 
+    // Store tree inner rect for mouse hit-testing
+    app.area_tree = Rect {
+        x: tree_area.x + 1,
+        y: tree_area.y + 1,
+        width: tree_area.width.saturating_sub(2),
+        height: tree_area.height.saturating_sub(2),
+    };
+
     // Render each zone
     let (session_count, active_count) = app.session_counts();
-    widgets::top_bar::render_top_bar(frame, top_bar, session_count, active_count);
+    app.area_theme_label =
+        widgets::top_bar::render_top_bar(frame, top_bar, session_count, active_count);
 
     widgets::tree::render_tree(
         frame,

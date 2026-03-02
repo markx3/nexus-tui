@@ -6,10 +6,15 @@ use ratatui::Frame;
 use crate::theme;
 use crate::types::{PanelType, ThemeElement};
 
-/// Render the top status bar.
+/// Render the top status bar and return the screen rect of the theme label (for click hit-testing).
 ///
-/// Layout: `SYS:ONLINE == SESSIONS:{count} == ACTIVE:{count} == {date}`
-pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, active_count: usize) {
+/// Layout: `SYS:ONLINE == SESSIONS:{count} == ACTIVE:{count} == {date} == THEME:{name}`
+pub fn render_top_bar(
+    frame: &mut Frame,
+    area: Rect,
+    session_count: usize,
+    active_count: usize,
+) -> Rect {
     let date = current_date_string();
 
     let active_style = if active_count > 0 {
@@ -17,6 +22,8 @@ pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, activ
     } else {
         theme::style_for(ThemeElement::Text)
     };
+
+    let theme_text = format!("THEME:{}", theme::current_name());
 
     let status = Line::from(vec![
         Span::styled(" SYS:", theme::style_for(ThemeElement::TopBarLabel)),
@@ -40,8 +47,26 @@ pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, activ
             format!(" {} ", theme::SEPARATOR),
             theme::style_for(ThemeElement::TopBarLabel),
         ),
-        Span::styled(date, theme::style_for(ThemeElement::TopBarLabel)),
+        Span::styled(&date, theme::style_for(ThemeElement::TopBarLabel)),
+        Span::styled(
+            format!(" {} ", theme::SEPARATOR),
+            theme::style_for(ThemeElement::TopBarLabel),
+        ),
+        Span::styled(&theme_text, theme::style_for(ThemeElement::Accent)),
     ]);
+
+    // Compute the screen rect of the theme label for mouse hit-testing
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let preceding_width: usize = status.spans[..status.spans.len() - 1]
+        .iter()
+        .map(|s| s.content.len())
+        .sum();
+    let theme_rect = Rect {
+        x: inner.x + preceding_width as u16,
+        y: inner.y,
+        width: theme_text.len() as u16,
+        height: 1,
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -51,6 +76,8 @@ pub fn render_top_bar(frame: &mut Frame, area: Rect, session_count: usize, activ
 
     let paragraph = Paragraph::new(status).block(block);
     frame.render_widget(paragraph, area);
+
+    theme_rect
 }
 
 /// Format the current date as `YYYY.MM.DD` using the consolidated time_utils.
@@ -71,7 +98,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_top_bar(frame, area, 5, 2);
+                let _ = render_top_bar(frame, area, 5, 2);
             })
             .unwrap();
     }
@@ -83,7 +110,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_top_bar(frame, area, 0, 0);
+                let _ = render_top_bar(frame, area, 0, 0);
             })
             .unwrap();
     }
