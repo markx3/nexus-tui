@@ -152,18 +152,33 @@ const KNOWN_SEEDS: &[&[(isize, isize)]] = &[
     ],
 ];
 
-fn curated_seed(width: usize, height: usize) -> Vec<Vec<u8>> {
+fn random_seed(width: usize, height: usize) -> Vec<Vec<u8>> {
     let mut rng = rand::rng();
-    let pattern = KNOWN_SEEDS[rng.random_range(0..KNOWN_SEEDS.len())];
-    let mut grid = vec![vec![0u8; width]; height];
-    let cx = width as isize / 2;
-    let cy = height as isize / 2;
-    for &(dx, dy) in pattern {
-        let x = (cx + dx).rem_euclid(width as isize) as usize;
-        let y = (cy + dy).rem_euclid(height as isize) as usize;
-        grid[y][x] = 1;
+    (0..height)
+        .map(|_| {
+            (0..width)
+                .map(|_| if rng.random_bool(0.35) { 1u8 } else { 0u8 })
+                .collect()
+        })
+        .collect()
+}
+
+fn new_seed(width: usize, height: usize) -> Vec<Vec<u8>> {
+    let mut rng = rand::rng();
+    if rng.random_bool(0.5) {
+        random_seed(width, height)
+    } else {
+        let pattern = KNOWN_SEEDS[rng.random_range(0..KNOWN_SEEDS.len())];
+        let mut grid = vec![vec![0u8; width]; height];
+        let cx = width as isize / 2;
+        let cy = height as isize / 2;
+        for &(dx, dy) in pattern {
+            let x = (cx + dx).rem_euclid(width as isize) as usize;
+            let y = (cy + dy).rem_euclid(height as isize) as usize;
+            grid[y][x] = 1;
+        }
+        grid
     }
-    grid
 }
 
 fn count_neighbors(grid: &[Vec<u8>], x: usize, y: usize) -> u8 {
@@ -257,7 +272,7 @@ impl LogoState {
             self.width = width;
             self.height = height;
             if width >= 5 && height >= 3 {
-                self.grid = curated_seed(width, height);
+                self.grid = new_seed(width, height);
                 self.prev_grid = Vec::new();
                 self.prev2_grid = Vec::new();
             } else {
@@ -271,7 +286,7 @@ impl LogoState {
 
         // Forced reseed after CYCLE_LEN frames
         if self.frame_count >= CYCLE_LEN {
-            self.grid = curated_seed(width, height);
+            self.grid = new_seed(width, height);
             self.prev_grid = Vec::new();
             self.prev2_grid = Vec::new();
             self.frame_count = 0;
@@ -280,7 +295,7 @@ impl LogoState {
 
         // Stagnation: alive/dead pattern unchanged from previous step (period-1)
         if same_pattern(&self.grid, &self.prev_grid) {
-            self.grid = curated_seed(width, height);
+            self.grid = new_seed(width, height);
             self.prev_grid = Vec::new();
             self.prev2_grid = Vec::new();
             self.frame_count = 0;
@@ -289,7 +304,7 @@ impl LogoState {
 
         // Period-2 stagnation (blinkers): alive/dead pattern same as 2 frames ago
         if same_pattern(&self.grid, &self.prev2_grid) {
-            self.grid = curated_seed(width, height);
+            self.grid = new_seed(width, height);
             self.prev_grid = Vec::new();
             self.prev2_grid = Vec::new();
             self.frame_count = 0;
@@ -299,7 +314,7 @@ impl LogoState {
         // All dead
         let any_alive = self.grid.iter().any(|row| row.iter().any(|&c| c > 0));
         if !any_alive {
-            self.grid = curated_seed(width, height);
+            self.grid = new_seed(width, height);
             self.prev_grid = Vec::new();
             self.prev2_grid = Vec::new();
             self.frame_count = 0;
