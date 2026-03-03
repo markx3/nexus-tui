@@ -32,9 +32,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     let [top_bar, main_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
 
-    // Main area: tree (13%) + right column (fills remainder)
+    // Main area: tree (dynamic %) + right column (fills remainder)
     let [left_panel, right_column] =
-        Layout::horizontal([Constraint::Percentage(13), Constraint::Fill(1)]).areas(main_area);
+        Layout::horizontal([Constraint::Percentage(app.tree_width_pct), Constraint::Fill(1)])
+            .areas(main_area);
+
+    // Store border x-position for drag hit-testing
+    app.area_border_x = left_panel.x + left_panel.width;
 
     // Right column: interactor fills everything
     let interactor_area = right_column;

@@ -27,6 +27,9 @@ use crate::widgets::tree_state::{FlatNodeKind, TreeAction, TreeState};
 const TICK_RATE: Duration = Duration::from_millis(16);
 const TMUX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const LOGO_FRAME_INTERVAL: Duration = Duration::from_millis(300);
+const TREE_WIDTH_PCT_MIN: u16 = 15;
+const TREE_WIDTH_PCT_MAX: u16 = 40;
+const TREE_WIDTH_PCT_DEFAULT: u16 = 20;
 
 /// Suspend the TUI (alternate screen, raw mode, mouse/paste), run a closure,
 /// then restore the TUI. Used by fullscreen attach and lazygit.
@@ -102,6 +105,10 @@ pub struct App {
     pub(crate) text_selection: Option<TextSelection>,
     pub(crate) area_interactor_inner: Rect,
     pub(crate) interactor_rendered_cells: Vec<Vec<String>>,
+    // Draggable tree/interactor border
+    pub(crate) tree_width_pct: u16,
+    pub(crate) dragging_border: bool,
+    pub(crate) area_border_x: u16,
 }
 
 impl App {
@@ -119,6 +126,14 @@ impl App {
                 theme::set_theme(idx);
             }
         }
+
+        let tree_width_pct = db
+            .get_setting("tree_width_pct")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(TREE_WIDTH_PCT_DEFAULT)
+            .clamp(TREE_WIDTH_PCT_MIN, TREE_WIDTH_PCT_MAX);
 
         let tree_state = TreeState::new(&tree);
         let selection = SelectionState::default();
@@ -179,6 +194,9 @@ impl App {
             text_selection: None,
             area_interactor_inner: Rect::default(),
             interactor_rendered_cells: Vec::new(),
+            tree_width_pct,
+            dragging_border: false,
+            area_border_x: 0,
         }
     }
 
@@ -224,8 +242,8 @@ impl App {
             // Advance logo animation frame
             if now.duration_since(self.logo_last_advance) >= LOGO_FRAME_INTERVAL {
                 let term_size = terminal.size()?;
-                // Logo panel: 13% of width, 9 rows high, minus 2 for borders each
-                let logo_w = (term_size.width * 13 / 100).saturating_sub(2) as usize;
+                // Logo panel: tree_width_pct of width, 9 rows high, minus 2 for borders each
+                let logo_w = (term_size.width * self.tree_width_pct / 100).saturating_sub(2) as usize;
                 let logo_h = 9usize.saturating_sub(2);
                 self.logo_state.advance(logo_w, logo_h);
                 self.logo_last_advance = now;
@@ -300,6 +318,15 @@ impl App {
                     }
                 }
                 MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                    // Check if click is on/near the vertical border (±1 col tolerance)
+                    let on_border = col >= self.area_border_x.saturating_sub(1)
+                        && col <= self.area_border_x + 1
+                        && row >= 3; // below top_bar
+                    if on_border {
+                        self.dragging_border = true;
+                        return;
+                    }
+
                     let inner = self.area_interactor_inner;
                     if self.input_mode == InputMode::Normal
                         && !self.show_help
@@ -319,6 +346,16 @@ impl App {
                     }
                 }
                 MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                    if self.dragging_border {
+                        if let Ok((term_cols, _)) = crossterm::terminal::size() {
+                            if term_cols > 0 {
+                                let pct = ((col as u32) * 100 / term_cols as u32) as u16;
+                                self.tree_width_pct =
+                                    pct.clamp(TREE_WIDTH_PCT_MIN, TREE_WIDTH_PCT_MAX);
+                            }
+                        }
+                        return;
+                    }
                     if let Some(ref mut sel) = self.text_selection {
                         let inner = self.area_interactor_inner;
                         sel.end = (
@@ -330,6 +367,14 @@ impl App {
                     }
                 }
                 MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                    if self.dragging_border {
+                        self.dragging_border = false;
+                        let _ = self
+                            .db
+                            .set_setting("tree_width_pct", &self.tree_width_pct.to_string());
+                        self.sync_interactor_size();
+                        return;
+                    }
                     if let Some(ref sel) = self.text_selection {
                         if sel.is_nonempty() {
                             let text = self.extract_selection_text();
@@ -378,11 +423,8 @@ impl App {
         }
 
         // Resize events — update interactor pane geometry
-        if let Event::Resize(cols, rows) = event {
-            if let Some(ref mut is) = self.interactor_state {
-                let (ic, ir) = interactor_inner_size(cols, rows);
-                is.resize_if_needed(ic, ir);
-            }
+        if matches!(event, Event::Resize(_, _)) {
+            self.sync_interactor_size();
             return;
         }
 
@@ -675,14 +717,20 @@ impl App {
         if let Some(ref session) = self.cached_selected {
             if let Some(ref mut is) = self.interactor_state {
                 is.switch_session(session);
-                // Resize the tmux pane to match the interactor panel dimensions.
-                if let Ok((cols, rows)) = crossterm::terminal::size() {
-                    let (ic, ir) = interactor_inner_size(cols, rows);
-                    is.resize_if_needed(ic, ir);
-                }
             }
+            self.sync_interactor_size();
         } else if let Some(ref mut is) = self.interactor_state {
             is.clear();
+        }
+    }
+
+    /// Resize the interactor's tmux pane to match current terminal + tree width.
+    fn sync_interactor_size(&mut self) {
+        if let Ok((cols, rows)) = crossterm::terminal::size() {
+            let (ic, ir) = interactor_inner_size(cols, rows, self.tree_width_pct);
+            if let Some(ref mut is) = self.interactor_state {
+                is.resize_if_needed(ic, ir);
+            }
         }
     }
 
@@ -1378,10 +1426,10 @@ impl App {
 /// Compute the exact inner dimensions of the interactor panel.
 ///
 /// Mirrors the layout in `ui.rs`: top_bar (3 rows) + main area, right column
-/// is 87% width (tree is 13%), interactor fills full height. Subtract 2 for borders.
-fn interactor_inner_size(term_cols: u16, term_rows: u16) -> (u16, u16) {
+/// fills the remainder after the tree panel. Subtract 2 for borders.
+fn interactor_inner_size(term_cols: u16, term_rows: u16, tree_pct: u16) -> (u16, u16) {
     let main_height = term_rows.saturating_sub(3); // top_bar = Length(3)
-    let right_width = term_cols * 87 / 100; // tree is 13%, right column fills rest
+    let right_width = term_cols * (100 - tree_pct) / 100;
     let inner_cols = right_width.saturating_sub(2);
     let inner_rows = main_height.saturating_sub(2);
     (inner_cols, inner_rows)
