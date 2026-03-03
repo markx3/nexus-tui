@@ -26,6 +26,7 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 ansi-to-tui = "8"
 rand = "0.9"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

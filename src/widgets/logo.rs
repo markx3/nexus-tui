@@ -218,6 +218,21 @@ fn gol_step(grid: &[Vec<u8>]) -> Vec<Vec<u8>> {
     next
 }
 
+/// Flip a few random cells near existing life to break stagnation.
+fn nudge(grid: &mut [Vec<u8>]) {
+    let h = grid.len();
+    let w = grid[0].len();
+    let mut rng = rand::rng();
+    for _ in 0..3 {
+        let x = rng.random_range(0..w);
+        let y = rng.random_range(0..h);
+        // Only birth cells adjacent to existing life so the nudge interacts
+        if grid[y][x] == 0 && count_neighbors(grid, x, y) > 0 {
+            grid[y][x] = 1;
+        }
+    }
+}
+
 /// Pick a display symbol based on cell position for visual variety.
 fn symbol_for(x: usize, y: usize) -> char {
     match (x + y * 3) % 5 {
@@ -293,22 +308,11 @@ impl LogoState {
             return;
         }
 
-        // Stagnation: alive/dead pattern unchanged from previous step (period-1)
-        if same_pattern(&self.grid, &self.prev_grid) {
-            self.grid = new_seed(width, height);
+        // Stagnation (period-1 or period-2): nudge a few cells to break the pattern
+        if same_pattern(&self.grid, &self.prev_grid) || same_pattern(&self.grid, &self.prev2_grid) {
+            nudge(&mut self.grid);
             self.prev_grid = Vec::new();
             self.prev2_grid = Vec::new();
-            self.frame_count = 0;
-            return;
-        }
-
-        // Period-2 stagnation (blinkers): alive/dead pattern same as 2 frames ago
-        if same_pattern(&self.grid, &self.prev2_grid) {
-            self.grid = new_seed(width, height);
-            self.prev_grid = Vec::new();
-            self.prev2_grid = Vec::new();
-            self.frame_count = 0;
-            return;
         }
 
         // All dead

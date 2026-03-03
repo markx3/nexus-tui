@@ -73,6 +73,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         widgets::logo::render_logo(frame, logo_area, &app.logo_state);
     }
 
+    // Store interactor inner area for mouse text selection hit-testing
+    app.area_interactor_inner = Rect {
+        x: interactor_area.x + 1,
+        y: interactor_area.y + 1,
+        width: interactor_area.width.saturating_sub(2),
+        height: interactor_area.height.saturating_sub(2),
+    };
+
     // Clamp live_scroll_offset to max scrollable range before reading it
     let inner_height = interactor_area.height.saturating_sub(2); // border top+bottom
     if let Some(ref mut is) = app.interactor_state {
@@ -109,6 +117,45 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         log_scroll,
         live_scroll,
     );
+
+    // Cache interactor text and render selection highlight
+    {
+        let inner = app.area_interactor_inner;
+        let buf = frame.buffer_mut();
+
+        // Cache cell symbols for text extraction
+        if app.text_selection.is_some() {
+            app.interactor_rendered_cells.clear();
+            for y in inner.y..inner.y + inner.height {
+                let mut row = Vec::with_capacity(inner.width as usize);
+                for x in inner.x..inner.x + inner.width {
+                    row.push(buf[(x, y)].symbol().to_string());
+                }
+                app.interactor_rendered_cells.push(row);
+            }
+        }
+
+        // Apply selection highlight (REVERSED modifier)
+        if let Some(ref sel) = app.text_selection {
+            let (start, end) = sel.normalized();
+            for y in start.1.max(inner.y)..=end.1.min(inner.y + inner.height.saturating_sub(1)) {
+                let x_start = if y == start.1 {
+                    start.0.max(inner.x)
+                } else {
+                    inner.x
+                };
+                let x_end = if y == end.1 {
+                    end.0.min(inner.x + inner.width.saturating_sub(1))
+                } else {
+                    inner.x + inner.width.saturating_sub(1)
+                };
+                for x in x_start..=x_end {
+                    let style = buf[(x, y)].style().add_modifier(Modifier::REVERSED);
+                    buf[(x, y)].set_style(style);
+                }
+            }
+        }
+    }
 
     // Input prompt overlay (renders over full main area for readability)
     match app.input_mode {
@@ -573,6 +620,9 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+t / Alt+T", "Cycle theme"),
         ("Alt+l", "Open lazygit in session cwd"),
         ("Alt+p", "Session finder"),
+        ("", ""),
+        ("", "Click+drag in session panel"),
+        ("", "to select and copy text."),
         ("", ""),
         ("", "All other keys are forwarded to"),
         ("", "the embedded Claude Code session."),

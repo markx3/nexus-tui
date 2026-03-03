@@ -248,3 +248,28 @@ pub enum PanelType {
     SessionInteractor,
     Logo,
 }
+
+/// Mouse text selection state for the interactor panel.
+/// Coordinates are absolute screen positions (col, row).
+pub struct TextSelection {
+    pub anchor: (u16, u16),
+    pub end: (u16, u16),
+}
+
+impl TextSelection {
+    /// Return (start, end) with start <= end in reading order.
+    pub fn normalized(&self) -> ((u16, u16), (u16, u16)) {
+        if self.anchor.1 < self.end.1
+            || (self.anchor.1 == self.end.1 && self.anchor.0 <= self.end.0)
+        {
+            (self.anchor, self.end)
+        } else {
+            (self.end, self.anchor)
+        }
+    }
+
+    /// True if the selection spans at least one character.
+    pub fn is_nonempty(&self) -> bool {
+        self.anchor != self.end
+    }
+}

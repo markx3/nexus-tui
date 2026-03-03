@@ -16,6 +16,10 @@ cargo install --path .         # install binary locally
 
 CI runs `cargo fmt --check`, then `clippy -D warnings`, then `cargo test` on Ubuntu stable toolchain.
 
+## Documentation
+
+Always update `README.md` when adding or removing user-facing functionality (features, keybindings, CLI commands, configuration options).
+
 ## Architecture
 
 Nexus is a cyberpunk-themed TUI session manager for Claude Code, built with Rust/Ratatui/TachyonFX. It wraps Claude Code sessions in tmux panes and provides a dashboard with live terminal preview, session grouping, and full CRUD.

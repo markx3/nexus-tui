@@ -98,6 +98,10 @@ pub struct App {
     pub(crate) area_theme_label: Rect,
     // Session finder state
     pub(crate) finder_state: FinderState,
+    // Mouse text selection in the interactor panel
+    pub(crate) text_selection: Option<TextSelection>,
+    pub(crate) area_interactor_inner: Rect,
+    pub(crate) interactor_rendered_cells: Vec<Vec<String>>,
 }
 
 impl App {
@@ -172,6 +176,9 @@ impl App {
             area_tree: Rect::default(),
             area_theme_label: Rect::default(),
             finder_state: FinderState::new(),
+            text_selection: None,
+            area_interactor_inner: Rect::default(),
+            interactor_rendered_cells: Vec::new(),
         }
     }
 
@@ -200,6 +207,7 @@ impl App {
             if let Some(ref mut is) = self.interactor_state {
                 if is.poll_content() {
                     self.dirty = true;
+                    self.text_selection = None;
                 }
             }
 
@@ -265,6 +273,8 @@ impl App {
                         MouseEventKind::ScrollUp
                             | MouseEventKind::ScrollDown
                             | MouseEventKind::Down(_)
+                            | MouseEventKind::Drag(crossterm::event::MouseButton::Left)
+                            | MouseEventKind::Up(crossterm::event::MouseButton::Left)
                     )
                 );
                 self.handle_event(ev);
@@ -278,21 +288,67 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event) {
-        // Mouse scroll — handle directly, regardless of mode.
-        // Non-scroll mouse events (move, click) are silently dropped.
+        // Mouse events — handle directly, regardless of mode.
         if let Event::Mouse(mouse) = &event {
+            let col = mouse.column;
+            let row = mouse.row;
             match mouse.kind {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    self.text_selection = None;
                     if let Some(ref mut is) = self.interactor_state {
                         is.handle_mouse_scroll(mouse.kind);
                     }
                 }
                 MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                    self.handle_mouse_click(mouse.column, mouse.row);
+                    let inner = self.area_interactor_inner;
+                    if self.input_mode == InputMode::Normal
+                        && !self.show_help
+                        && inner.width > 0
+                        && col >= inner.x
+                        && col < inner.x + inner.width
+                        && row >= inner.y
+                        && row < inner.y + inner.height
+                    {
+                        self.text_selection = Some(TextSelection {
+                            anchor: (col, row),
+                            end: (col, row),
+                        });
+                    } else {
+                        self.text_selection = None;
+                        self.handle_mouse_click(col, row);
+                    }
+                }
+                MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                    if let Some(ref mut sel) = self.text_selection {
+                        let inner = self.area_interactor_inner;
+                        sel.end = (
+                            col.max(inner.x)
+                                .min(inner.x + inner.width.saturating_sub(1)),
+                            row.max(inner.y)
+                                .min(inner.y + inner.height.saturating_sub(1)),
+                        );
+                    }
+                }
+                MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                    if let Some(ref sel) = self.text_selection {
+                        if sel.is_nonempty() {
+                            let text = self.extract_selection_text();
+                            if !text.is_empty() {
+                                self.copy_to_clipboard(&text);
+                            }
+                        } else {
+                            self.text_selection = None;
+                        }
+                    }
                 }
                 _ => {} // drop mouse-move / right-click — avoids unnecessary redraws
             }
             return;
+        }
+
+        // Any key press clears text selection
+        if matches!(&event, Event::Key(k) if k.kind == KeyEventKind::Press) {
+            self.text_selection = None;
         }
 
         // Modal overlays intercept key events directly (not forwarded to tmux)
@@ -533,6 +589,54 @@ impl App {
                 self.handle_tree_action(TreeAction::Select(SelectionTarget::Session(sid)));
             }
         }
+    }
+
+    fn extract_selection_text(&self) -> String {
+        let sel = match &self.text_selection {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let inner = self.area_interactor_inner;
+        let (start, end) = sel.normalized();
+        let mut result = String::new();
+
+        for y in start.1..=end.1 {
+            let row_idx = (y - inner.y) as usize;
+            if row_idx >= self.interactor_rendered_cells.len() {
+                continue;
+            }
+            let row = &self.interactor_rendered_cells[row_idx];
+
+            let x_start = if y == start.1 {
+                (start.0 - inner.x) as usize
+            } else {
+                0
+            };
+            let x_end = if y == end.1 {
+                (end.0 - inner.x) as usize + 1
+            } else {
+                row.len()
+            };
+            let x_start = x_start.min(row.len());
+            let x_end = x_end.min(row.len());
+
+            let line: String = row[x_start..x_end].concat();
+            result.push_str(line.trim_end());
+            if y < end.1 {
+                result.push('\n');
+            }
+        }
+        result
+    }
+
+    fn copy_to_clipboard(&mut self, text: &str) {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+        let osc = format!("\x1b]52;c;{encoded}\x07");
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), osc.as_bytes());
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let chars = text.len();
+        self.status_message = Some((format!("Copied {chars} chars"), Instant::now()));
     }
 
     fn handle_tree_action(&mut self, action: TreeAction) {
