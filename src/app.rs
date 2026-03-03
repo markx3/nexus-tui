@@ -243,7 +243,8 @@ impl App {
             if now.duration_since(self.logo_last_advance) >= LOGO_FRAME_INTERVAL {
                 let term_size = terminal.size()?;
                 // Logo panel: tree_width_pct of width, 9 rows high, minus 2 for borders each
-                let logo_w = (term_size.width * self.tree_width_pct / 100).saturating_sub(2) as usize;
+                let logo_w =
+                    (term_size.width * self.tree_width_pct / 100).saturating_sub(2) as usize;
                 let logo_h = 9usize.saturating_sub(2);
                 self.logo_state.advance(logo_w, logo_h);
                 self.logo_last_advance = now;

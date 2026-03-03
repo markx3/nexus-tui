@@ -5,3 +5,4 @@ docs/
 todos/
 compound-engineering.local.md
 .claude/settings.local.json
+.worktrees
