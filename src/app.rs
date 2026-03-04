@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -118,20 +119,30 @@ pub struct App {
     feedback_rx: Option<mpsc::Receiver<HashSet<String>>>,
     pub(crate) attention_effects: HashMap<String, Effect>,
     // Pending background worktree creation
-    worktree_rx: Option<mpsc::Receiver<color_eyre::Result<git::WorktreeResult>>>,
-    worktree_pending_ctx: Option<PendingWorktreeCtx>,
+    pending_wt_create: Option<PendingWorktreeCreate>,
     // Pending background worktree teardown
-    worktree_teardown_rx: Option<mpsc::Receiver<color_eyre::Result<()>>>,
-    worktree_teardown_session_id: Option<String>,
+    pending_wt_teardown: Option<PendingWorktreeTeardown>,
+}
+
+/// Bundled state for a background worktree creation.
+struct PendingWorktreeCreate {
+    rx: mpsc::Receiver<color_eyre::Result<()>>,
+    ctx: PendingWorktreeCtx,
 }
 
 /// Context stored while a worktree is being created on a background thread.
 struct PendingWorktreeCtx {
     name: String,
     cwd: String, // the worktree path (will become session cwd)
-    repo_root: String,
+    repo_root: PathBuf,
     branch: String,
     group_id: Option<GroupId>,
+}
+
+/// Bundled state for a background worktree teardown.
+struct PendingWorktreeTeardown {
+    rx: mpsc::Receiver<color_eyre::Result<()>>,
+    session_id: String,
 }
 
 impl App {
@@ -220,10 +231,8 @@ impl App {
             attention_sessions: HashSet::new(),
             feedback_rx,
             attention_effects: HashMap::new(),
-            worktree_rx: None,
-            worktree_pending_ctx: None,
-            worktree_teardown_rx: None,
-            worktree_teardown_session_id: None,
+            pending_wt_create: None,
+            pending_wt_teardown: None,
         }
     }
 
@@ -894,12 +903,15 @@ impl App {
             }
             InputContext::NewSessionCwd { name } => {
                 // If CWD is a git repo, offer worktree isolation
-                if git::detect_repo(&buffer).is_some() {
+                if let Some(repo) = git::detect_repo(&buffer) {
                     self.input_mode = InputMode::Confirm;
-                    self.input_context =
-                        Some(InputContext::NewSessionWorktree { name, cwd: buffer });
+                    self.input_context = Some(InputContext::NewSessionWorktree {
+                        name,
+                        cwd: buffer,
+                        repo_root: repo.root,
+                    });
                 } else {
-                    self.transition_to_group_or_create(name, buffer, false);
+                    self.transition_to_group_or_create(name, buffer, None);
                 }
             }
             InputContext::RenameSession { session_id } => {
@@ -954,7 +966,12 @@ impl App {
     }
 
     /// Transition from CWD step to group picker or direct creation.
-    fn transition_to_group_or_create(&mut self, name: String, cwd: String, worktree: bool) {
+    fn transition_to_group_or_create(
+        &mut self,
+        name: String,
+        cwd: String,
+        repo_root: Option<PathBuf>,
+    ) {
         match self.db.get_all_groups() {
             Ok(groups) if !groups.is_empty() => {
                 let mut picker = vec![(0i64, "Ungrouped".to_string())];
@@ -965,11 +982,11 @@ impl App {
                 self.input_context = Some(InputContext::NewSessionGroup {
                     name,
                     cwd,
-                    worktree,
+                    repo_root,
                 });
             }
             _ => {
-                self.create_session_maybe_worktree(&name, &cwd, None, worktree);
+                self.create_session_maybe_worktree(&name, &cwd, None, repo_root);
                 self.input_mode = InputMode::Normal;
                 self.input_buffer.clear();
             }
@@ -988,19 +1005,22 @@ impl App {
         ) {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(InputContext::NewSessionWorktree { name, cwd }) =
-                        self.input_context.take()
+                    if let Some(InputContext::NewSessionWorktree {
+                        name,
+                        cwd,
+                        repo_root,
+                    }) = self.input_context.take()
                     {
                         self.input_mode = InputMode::Normal;
-                        self.transition_to_group_or_create(name, cwd, true);
+                        self.transition_to_group_or_create(name, cwd, Some(repo_root));
                     }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') => {
-                    if let Some(InputContext::NewSessionWorktree { name, cwd }) =
+                    if let Some(InputContext::NewSessionWorktree { name, cwd, .. }) =
                         self.input_context.take()
                     {
                         self.input_mode = InputMode::Normal;
-                        self.transition_to_group_or_create(name, cwd, false);
+                        self.transition_to_group_or_create(name, cwd, None);
                     }
                 }
                 KeyCode::Esc => {
@@ -1011,29 +1031,29 @@ impl App {
             }
             return;
         }
-        // Worktree delete: 's' = session only (leave worktree on disk)
+        // Worktree delete: 's' = session only (strip worktree, fall through to confirm)
         if let KeyCode::Char('s') | KeyCode::Char('S') = key.code {
-            if let Some(InputContext::ConfirmDeleteSession {
-                worktree: Some(_), ..
-            }) = &self.input_context
-            {
-                // Take context and delete session only
+            if matches!(
+                self.input_context,
+                Some(InputContext::ConfirmDeleteSession {
+                    worktree: Some(_),
+                    ..
+                })
+            ) {
+                // Strip worktree from context, then fall through to 'y' handler
                 if let Some(InputContext::ConfirmDeleteSession {
                     session_id,
                     tmux_name,
                     ..
                 }) = self.input_context.take()
                 {
+                    let ctx = InputContext::ConfirmDeleteSession {
+                        session_id,
+                        tmux_name,
+                        worktree: None,
+                    };
                     self.input_mode = InputMode::Normal;
-                    if let Some(ref name) = tmux_name {
-                        let _ = self.tmux.kill_session(name);
-                    }
-                    if let Err(e) = self.db.delete_session(&session_id) {
-                        self.status_message = Some((format!("delete failed: {e}"), Instant::now()));
-                    }
-                    self.jsonl_snapshots.remove(&session_id);
-                    self.refresh_tree();
-                    self.dirty = true;
+                    self.process_confirm(ctx);
                 }
                 return;
             }
@@ -1081,12 +1101,14 @@ impl App {
                         let repo_root = wt.repo_root.clone();
                         let branch = wt.branch.clone();
                         let (tx, rx) = mpsc::channel();
-                        std::thread::spawn(move || {
-                            let result = git::remove_worktree(&repo_root, &wt_path, &branch);
-                            let _ = tx.send(result);
-                        });
-                        self.worktree_teardown_rx = Some(rx);
-                        self.worktree_teardown_session_id = Some(session_id);
+                        std::thread::Builder::new()
+                            .name("nexus-wt-teardown".to_string())
+                            .spawn(move || {
+                                let result = git::remove_worktree(&repo_root, &wt_path, &branch);
+                                let _ = tx.send(result);
+                            })
+                            .expect("thread spawn");
+                        self.pending_wt_teardown = Some(PendingWorktreeTeardown { rx, session_id });
                         return;
                     }
                     // Worktree dir doesn't exist — clear columns and proceed
@@ -1147,11 +1169,11 @@ impl App {
                     Some(InputContext::NewSessionGroup {
                         name,
                         cwd,
-                        worktree,
+                        repo_root,
                     }) => {
                         // gid 0 is the "Ungrouped" sentinel
                         let group = gid.filter(|&id| id != 0);
-                        self.create_session_maybe_worktree(&name, &cwd, group, worktree);
+                        self.create_session_maybe_worktree(&name, &cwd, group, repo_root);
                     }
                     other => {
                         self.input_context = other;
@@ -1358,13 +1380,27 @@ impl App {
     // -----------------------------------------------------------------------
 
     fn create_session(&mut self, name: &str, cwd: &str, group_id: Option<GroupId>) {
+        self.finalize_session_creation(name, cwd, group_id, None);
+    }
+
+    /// Shared session creation logic for both plain and worktree sessions.
+    fn finalize_session_creation(
+        &mut self,
+        name: &str,
+        cwd: &str,
+        group_id: Option<GroupId>,
+        worktree: Option<&WorktreeInfo>,
+    ) {
         let tmux_name = sanitize_tmux_name(name);
         let tmux_name = self
             .db
             .next_unique_tmux_name(&tmux_name, None)
             .unwrap_or(tmux_name);
         let snapshot = snapshot_jsonl_stems(cwd);
-        match self.db.create_nexus_session(name, cwd, &tmux_name, None) {
+        match self
+            .db
+            .create_nexus_session(name, cwd, &tmux_name, worktree)
+        {
             Ok(id) => {
                 self.jsonl_snapshots.insert(id.clone(), snapshot);
                 if let Some(gid) = group_id {
@@ -1395,29 +1431,33 @@ impl App {
     }
 
     /// Create a session, optionally with worktree isolation.
-    /// If worktree=true, spawns a background thread for git worktree creation.
+    /// If `repo_root` is provided, spawns a background thread for git worktree creation.
     fn create_session_maybe_worktree(
         &mut self,
         name: &str,
         cwd: &str,
         group_id: Option<GroupId>,
-        worktree: bool,
+        repo_root: Option<PathBuf>,
     ) {
-        if !worktree {
-            self.create_session(name, cwd, group_id);
-            return;
-        }
-
-        let repo = match git::detect_repo(cwd) {
+        let repo_root = match repo_root {
             Some(r) => r,
             None => {
-                self.status_message = Some(("Not a git repository".to_string(), Instant::now()));
+                self.create_session(name, cwd, group_id);
                 return;
             }
         };
 
+        // Guard: only one worktree operation at a time
+        if self.pending_wt_create.is_some() || self.pending_wt_teardown.is_some() {
+            self.status_message = Some((
+                "Worktree operation already in progress".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+
         let branch = git::sanitize_branch_name(name);
-        if git::branch_exists(&repo.root, &branch) {
+        if git::branch_exists(&repo_root, &branch) {
             self.status_message = Some((
                 format!("Branch '{}' already exists", branch),
                 Instant::now(),
@@ -1425,93 +1465,60 @@ impl App {
             return;
         }
 
-        let sanitized_dir = git::sanitize_branch_name(name).replace('/', "-");
-        let worktree_path = repo.root.join(".worktrees").join(&sanitized_dir);
+        let sanitized_dir = branch.replace('/', "-");
+        let worktree_path = repo_root.join(".worktrees").join(&sanitized_dir);
 
         self.status_message = Some(("Creating worktree...".to_string(), Instant::now()));
         self.dirty = true;
 
-        // Spawn background thread for worktree creation
-        let repo_root = repo.root.clone();
+        // Spawn named background thread for worktree creation
+        let root_clone = repo_root.clone();
         let session_name = name.to_string();
         let wt_path = worktree_path.clone();
         let branch_clone = branch.clone();
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let result = git::create_worktree(&repo_root, &session_name, &wt_path, &branch_clone);
-            let _ = tx.send(result);
-        });
+        std::thread::Builder::new()
+            .name("nexus-wt-create".to_string())
+            .spawn(move || {
+                let result =
+                    git::create_worktree(&root_clone, &session_name, &wt_path, &branch_clone);
+                let _ = tx.send(result);
+            })
+            .expect("thread spawn");
 
-        self.worktree_rx = Some(rx);
-        self.worktree_pending_ctx = Some(PendingWorktreeCtx {
-            name: name.to_string(),
-            cwd: worktree_path.to_string_lossy().to_string(),
-            repo_root: repo.root.to_string_lossy().to_string(),
-            branch,
-            group_id,
+        self.pending_wt_create = Some(PendingWorktreeCreate {
+            rx,
+            ctx: PendingWorktreeCtx {
+                name: name.to_string(),
+                cwd: worktree_path.to_string_lossy().to_string(),
+                repo_root,
+                branch,
+                group_id,
+            },
         });
     }
 
     /// Called from event loop to check if background worktree creation finished.
     fn poll_worktree_pending(&mut self) {
-        let result = match self.worktree_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+        let result = match self
+            .pending_wt_create
+            .as_ref()
+            .and_then(|p| p.rx.try_recv().ok())
+        {
             Some(r) => r,
             None => return,
         };
 
-        self.worktree_rx = None;
-        let ctx = match self.worktree_pending_ctx.take() {
-            Some(c) => c,
-            None => return,
-        };
+        let ctx = self.pending_wt_create.take().unwrap().ctx;
 
         match result {
-            Ok(_wt) => {
+            Ok(()) => {
                 let wt_info = WorktreeInfo {
                     branch: ctx.branch,
-                    repo_root: std::path::PathBuf::from(&ctx.repo_root),
+                    repo_root: ctx.repo_root,
                 };
-                // Create session with worktree info; cwd = worktree path
-                let tmux_name = sanitize_tmux_name(&ctx.name);
-                let tmux_name = self
-                    .db
-                    .next_unique_tmux_name(&tmux_name, None)
-                    .unwrap_or(tmux_name);
-                let snapshot = snapshot_jsonl_stems(&ctx.cwd);
-                match self
-                    .db
-                    .create_nexus_session(&ctx.name, &ctx.cwd, &tmux_name, Some(&wt_info))
-                {
-                    Ok(id) => {
-                        self.jsonl_snapshots.insert(id.clone(), snapshot);
-                        if let Some(gid) = ctx.group_id {
-                            if let Err(e) = self.db.assign_session_to_group(&id, gid) {
-                                self.status_message =
-                                    Some((format!("group assign failed: {e}"), Instant::now()));
-                            }
-                        }
-                        if self.tmux_available {
-                            if let Err(e) =
-                                self.tmux.launch_claude_session(&tmux_name, &ctx.cwd, None)
-                            {
-                                self.status_message =
-                                    Some((format!("tmux launch failed: {e}"), Instant::now()));
-                                self.refresh_tree();
-                                return;
-                            }
-                            let _ = self.tmux.configure_server();
-                        }
-                        self.status_message =
-                            Some(("Worktree created".to_string(), Instant::now()));
-                        self.selection.selected = Some(SelectionTarget::Session(id));
-                        self.refresh_tree();
-                        self.sync_interactor_to_selection();
-                        self.ensure_session_launched();
-                    }
-                    Err(e) => {
-                        self.status_message = Some((format!("create failed: {e}"), Instant::now()));
-                    }
-                }
+                self.status_message = Some(("Worktree created".to_string(), Instant::now()));
+                self.finalize_session_creation(&ctx.name, &ctx.cwd, ctx.group_id, Some(&wt_info));
             }
             Err(e) => {
                 self.status_message = Some((format!("worktree failed: {e}"), Instant::now()));
@@ -1523,19 +1530,15 @@ impl App {
     /// Called from event loop to check if background worktree teardown finished.
     fn poll_worktree_teardown(&mut self) {
         let result = match self
-            .worktree_teardown_rx
+            .pending_wt_teardown
             .as_ref()
-            .and_then(|rx| rx.try_recv().ok())
+            .and_then(|p| p.rx.try_recv().ok())
         {
             Some(r) => r,
             None => return,
         };
 
-        self.worktree_teardown_rx = None;
-        let session_id = match self.worktree_teardown_session_id.take() {
-            Some(id) => id,
-            None => return,
-        };
+        let session_id = self.pending_wt_teardown.take().unwrap().session_id;
 
         match result {
             Ok(()) => {

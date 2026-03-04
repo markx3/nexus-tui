@@ -36,6 +36,8 @@ fn main() -> Result<()> {
 fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
     let config = config::load_config()?;
     let db = db::Database::open(&config.general.db_path)?;
+    // Clean up stale worktree references (crash recovery)
+    let _ = db.reconcile_worktrees();
 
     match command {
         cli::Commands::List { all } => {
@@ -86,13 +88,13 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 if git::branch_exists(&repo.root, &branch) {
                     color_eyre::eyre::bail!("Branch '{}' already exists", branch);
                 }
-                let sanitized_dir = git::sanitize_branch_name(&name).replace('/', "-");
+                let sanitized_dir = branch.replace('/', "-");
                 let wt_path = repo.root.join(".worktrees").join(&sanitized_dir);
-                let result = git::create_worktree(&repo.root, &name, &wt_path, &branch)?;
+                git::create_worktree(&repo.root, &name, &wt_path, &branch)?;
                 Some((
-                    result.path.to_string_lossy().to_string(),
+                    wt_path.to_string_lossy().to_string(),
                     types::WorktreeInfo {
-                        branch: result.branch,
+                        branch,
                         repo_root: repo.root,
                     },
                 ))
@@ -362,8 +364,13 @@ fn print_tree(tree: &[types::TreeNode], depth: usize) {
                     types::SessionStatus::Detached => "~",
                     types::SessionStatus::Dead => "-",
                 };
+                let wt_badge = s
+                    .worktree
+                    .as_ref()
+                    .map(|wt| format!(" [{}]", wt.branch))
+                    .unwrap_or_default();
                 println!(
-                    "{indent}{status_icon} {} [{}]",
+                    "{indent}{status_icon} {} [{}]{wt_badge}",
                     s.display_name, s.last_active
                 );
             }

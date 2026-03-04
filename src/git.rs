@@ -2,19 +2,23 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::WrapErr;
+use color_eyre::eyre::{bail, Result};
 use wait_timeout::ChildExt;
 
 const HOOK_TIMEOUT: Duration = Duration::from_secs(60);
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 pub struct RepoInfo {
     pub root: PathBuf,
 }
 
-pub struct WorktreeResult {
-    pub path: PathBuf,
-    pub branch: String,
-}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /// Detect if path is inside a git work tree. Returns repo root.
 /// Returns None for non-git dirs, bare repos, errors.
@@ -105,7 +109,24 @@ pub fn sanitize_branch_name(session_name: &str) -> String {
         }
     }
 
-    let result = result.trim_matches('-').to_string();
+    let mut result = result.trim_matches('-').to_string();
+
+    // Strip `..` sequences (git ref traversal) and leading dots
+    while result.contains("..") {
+        result = result.replace("..", ".");
+    }
+    result = result.trim_start_matches('.').to_string();
+
+    // Collapse consecutive slashes and strip leading/trailing slashes
+    while result.contains("//") {
+        result = result.replace("//", "/");
+    }
+    result = result.trim_matches('/').to_string();
+
+    // Strip trailing `.lock` (reserved by git)
+    if result.ends_with(".lock") {
+        result.truncate(result.len() - 5);
+    }
 
     if result.is_empty() {
         "nexus/session".to_string()
@@ -122,7 +143,7 @@ pub fn create_worktree(
     session_name: &str,
     worktree_path: &Path,
     branch: &str,
-) -> Result<WorktreeResult> {
+) -> Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = worktree_path.parent() {
         std::fs::create_dir_all(parent)
@@ -164,10 +185,7 @@ pub fn create_worktree(
         }
     }
 
-    Ok(WorktreeResult {
-        path: worktree_path.to_path_buf(),
-        branch: branch.to_string(),
-    })
+    Ok(())
 }
 
 /// Remove a worktree. Checks for `.nexus/on-worktree-teardown` convention hook.
@@ -202,9 +220,9 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) -> 
             bail!("git worktree remove failed: {}", stderr.trim());
         }
 
-        // Also delete the branch
+        // Force-delete the branch to match --force worktree removal semantics
         let _ = Command::new("git")
-            .args(["-C", &repo_root.to_string_lossy(), "branch", "-d", branch])
+            .args(["-C", &repo_root.to_string_lossy(), "branch", "-D", branch])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -213,8 +231,17 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) -> 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
 /// Resolve convention hook: check `{repo_root}/.nexus/on-worktree-{create,teardown}`.
 /// Validates: file exists, is a regular file (not symlink), has executable bit.
+///
+/// NOTE: There is an inherent TOCTOU race between this check and the subsequent
+/// `execute_hook` call (the file could be replaced between resolution and execution).
+/// This is acceptable because hooks live in the user's own repo and this is the same
+/// trust model as git's own hook system.
 fn resolve_hook(repo_root: &Path, hook_name: &str) -> Option<PathBuf> {
     let hook_path = repo_root.join(".nexus").join(hook_name);
 
@@ -252,7 +279,15 @@ fn resolve_hook(repo_root: &Path, hook_name: &str) -> Option<PathBuf> {
 /// On timeout: kills process group to clean up child processes.
 fn execute_hook(script: &Path, env: &[(String, String)]) -> Result<()> {
     let mut cmd = Command::new(script);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+
+    // Scrub inherited environment, only forwarding safe vars
+    cmd.env_clear();
+    for key in &["PATH", "HOME", "SHELL", "USER", "LANG", "TERM"] {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
+    }
 
     for (k, v) in env {
         cmd.env(k, v);
@@ -387,8 +422,13 @@ mod tests {
 
     #[test]
     fn test_sanitize_branch_name_path_escape() {
-        // ../escape has only allowed chars (dots, slash), so it passes through
-        assert_eq!(sanitize_branch_name("../escape"), "nexus/../escape");
+        // `..` sequences are stripped to prevent git ref traversal
+        assert_eq!(sanitize_branch_name("../escape"), "nexus/escape");
+    }
+
+    #[test]
+    fn test_sanitize_branch_name_dot_lock() {
+        assert_eq!(sanitize_branch_name("my-branch.lock"), "nexus/my-branch");
     }
 
     #[test]
@@ -499,9 +539,7 @@ mod tests {
         let branch = "nexus/test-session";
 
         // Create
-        let result = create_worktree(&repo, "test-session", &wt_path, branch).unwrap();
-        assert_eq!(result.path, wt_path);
-        assert_eq!(result.branch, branch);
+        create_worktree(&repo, "test-session", &wt_path, branch).unwrap();
         assert!(wt_path.exists());
         assert!(branch_exists(&repo, branch));
 

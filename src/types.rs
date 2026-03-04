@@ -109,6 +109,7 @@ pub enum InputContext {
     NewSessionWorktree {
         name: String,
         cwd: String,
+        repo_root: PathBuf,
     },
     ConfirmDeleteSession {
         session_id: String,
@@ -124,7 +125,7 @@ pub enum InputContext {
     NewSessionGroup {
         name: String,
         cwd: String,
-        worktree: bool,
+        repo_root: Option<PathBuf>,
     },
 }
 
