@@ -272,6 +272,30 @@ impl TmuxManager {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// Lightweight text-only capture of the last N lines of a pane.
+    ///
+    /// No ANSI escapes, no alternate screen — just plain text for pattern
+    /// matching. Used by the feedback scanner to detect halt states.
+    pub fn capture_pane_tail(&self, session_name: &str, lines: u32) -> Result<String> {
+        Self::validate_target(session_name)?;
+        let lines_arg = format!("-{lines}");
+        let output = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["capture-pane", "-t", session_name, "-p", "-S", &lines_arg])
+            .stderr(Stdio::null())
+            .output()
+            .wrap_err("failed to run tmux capture-pane (tail)")?;
+
+        if !output.status.success() {
+            bail!(
+                "tmux capture-pane (tail) exited with status {} for '{}'",
+                output.status,
+                session_name
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     /// Send keys to a tmux session synchronously via `Command::status()`.
     ///
     /// Uses blocking wait to ensure keystroke ordering — rapid typing won't

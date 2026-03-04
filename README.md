@@ -19,6 +19,7 @@ Nexus gives you a persistent, organized workspace for managing multiple Claude C
 - **CLI + JSON output** — scriptable interface for all operations (`nexus list --json`)
 - **Lazygit integration** — open lazygit in any session's working directory with `Alt+l`
 - **Text selection** — click+drag in the session panel to select and copy text (via OSC 52)
+- **Feedback detection** — automatically detects when Claude is waiting for permission or confirmation across all sessions, pulsing the session tree row with a glow effect
 
 ## Install
 

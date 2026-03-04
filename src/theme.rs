@@ -291,6 +291,12 @@ pub fn fx_boot() -> Vec<Effect> {
     ]
 }
 
+/// Continuously pulsing foreground effect for attention rows.
+/// Oscillates the foreground from hazard color → current → hazard, forever.
+pub fn fx_attention_pulse() -> Effect {
+    fx::never_complete(fx::ping_pong(fx::fade_from_fg(hazard(), 800u32)))
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]

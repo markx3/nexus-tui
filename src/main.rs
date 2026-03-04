@@ -5,6 +5,7 @@ mod cli;
 pub(crate) mod config;
 mod conversation;
 pub(crate) mod db;
+mod feedback_scanner;
 #[cfg(test)]
 mod mock;
 mod path_complete;

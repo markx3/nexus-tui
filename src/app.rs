@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use color_eyre::Result;
@@ -15,6 +16,7 @@ use tachyonfx::Effect;
 use crate::capture_worker;
 use crate::config::NexusConfig;
 use crate::db::Database;
+use crate::feedback_scanner;
 use crate::theme;
 use crate::tmux::{sanitize_tmux_name, TmuxManager};
 use crate::types::*;
@@ -25,6 +27,7 @@ use crate::widgets::logo::LogoState;
 use crate::widgets::tree_state::{FlatNodeKind, TreeAction, TreeState};
 
 const TICK_RATE: Duration = Duration::from_millis(16);
+const ATTENTION_TICK: Duration = Duration::from_millis(50);
 const TMUX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const LOGO_FRAME_INTERVAL: Duration = Duration::from_millis(300);
 const TREE_WIDTH_PCT_MIN: u16 = 15;
@@ -109,6 +112,10 @@ pub struct App {
     pub(crate) tree_width_pct: u16,
     pub(crate) dragging_border: bool,
     pub(crate) area_border_x: u16,
+    // Feedback scanner: sessions needing user attention (tmux session names)
+    pub(crate) attention_sessions: HashSet<String>,
+    feedback_rx: Option<mpsc::Receiver<HashSet<String>>>,
+    pub(crate) attention_effects: HashMap<String, Effect>,
 }
 
 impl App {
@@ -139,21 +146,18 @@ impl App {
         let selection = SelectionState::default();
         let cached_counts = count_sessions(&tree);
 
-        // Spawn capture worker and configure tmux server if tmux is available
-        let interactor_state = if tmux_available {
+        // Spawn capture worker and feedback scanner if tmux is available
+        let (interactor_state, feedback_rx) = if tmux_available {
             // Configure true color + keybindings (no-op if server not yet started)
             if !tmux_sessions.is_empty() {
                 let _ = tmux.configure_server();
             }
             let (session_tx, content_rx, nudge_tx) = capture_worker::spawn(tmux.clone());
-            Some(InteractorState::new(
-                tmux.clone(),
-                content_rx,
-                session_tx,
-                nudge_tx,
-            ))
+            let is = InteractorState::new(tmux.clone(), content_rx, session_tx, nudge_tx);
+            let frx = feedback_scanner::spawn(tmux.clone());
+            (Some(is), Some(frx))
         } else {
-            None
+            (None, None)
         };
 
         Self {
@@ -197,6 +201,9 @@ impl App {
             tree_width_pct,
             dragging_border: false,
             area_border_x: 0,
+            attention_sessions: HashSet::new(),
+            feedback_rx,
+            attention_effects: HashMap::new(),
         }
     }
 
@@ -226,6 +233,22 @@ impl App {
                 if is.poll_content() {
                     self.dirty = true;
                     self.text_selection = None;
+                }
+            }
+
+            // Poll feedback scanner for attention state changes
+            let new_attention = self.feedback_rx.as_ref().and_then(|rx| {
+                let mut latest = None;
+                while let Ok(set) = rx.try_recv() {
+                    latest = Some(set);
+                }
+                latest
+            });
+            if let Some(set) = new_attention {
+                if set != self.attention_sessions {
+                    self.attention_sessions = set;
+                    self.rebuild_attention_effects();
+                    self.dirty = true;
                 }
             }
 
@@ -265,8 +288,9 @@ impl App {
                 self.dirty = true;
             }
 
-            // Only render when something changed
-            if self.dirty || !self.boot_done {
+            // Only render when something changed (or effects are animating)
+            let attention_active = !self.attention_sessions.is_empty();
+            if self.dirty || !self.boot_done || attention_active {
                 terminal.draw(|frame| ui::draw(frame, self, elapsed))?;
                 self.dirty = false;
             }
@@ -274,6 +298,8 @@ impl App {
             let poll_timeout = if self.boot_done {
                 if self.dirty {
                     TICK_RATE
+                } else if attention_active {
+                    ATTENTION_TICK
                 } else {
                     Duration::from_millis(100)
                 }
@@ -503,6 +529,7 @@ impl App {
             }
             NexusCommand::NextTheme => {
                 theme::next_theme();
+                self.rebuild_attention_effects();
                 self.status_message =
                     Some((format!("Theme: {}", theme::current_name()), Instant::now()));
                 self.persist_theme();
@@ -510,6 +537,7 @@ impl App {
             NexusCommand::OpenLazygit => self.open_lazygit(),
             NexusCommand::PrevTheme => {
                 theme::prev_theme();
+                self.rebuild_attention_effects();
                 self.status_message =
                     Some((format!("Theme: {}", theme::current_name()), Instant::now()));
                 self.persist_theme();
@@ -1368,6 +1396,17 @@ impl App {
         }
 
         self.cached_counts = count_sessions(&self.tree);
+
+        // Clean up attention for sessions that no longer have live tmux panes
+        let before = self.attention_sessions.len();
+        self.attention_sessions.retain(|n| {
+            self.tmux_sessions
+                .iter()
+                .any(|s| s.session_id.as_str() == n.as_str())
+        });
+        if self.attention_sessions.len() != before {
+            self.rebuild_attention_effects();
+        }
     }
 
     /// Scan active sessions that lack a `claude_session_id` and attempt to
@@ -1405,6 +1444,15 @@ impl App {
             self.cached_counts = count_sessions(&self.tree);
             self.refresh_cached_selected();
             self.dirty = true;
+        }
+    }
+
+    /// Rebuild attention effects with the current theme's hazard color.
+    fn rebuild_attention_effects(&mut self) {
+        self.attention_effects.clear();
+        for name in &self.attention_sessions {
+            self.attention_effects
+                .insert(name.clone(), theme::fx_attention_pulse());
         }
     }
 

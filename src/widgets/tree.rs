@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -6,7 +8,7 @@ use ratatui::Frame;
 
 use crate::theme;
 use crate::time_utils;
-use crate::types::{GroupIcon, PanelType, SessionStatus, ThemeElement, TreeNode};
+use crate::types::{GroupIcon, GroupId, PanelType, SessionStatus, ThemeElement, TreeNode};
 use crate::widgets::tree_state::{FlatNodeKind, TreeState};
 
 // ---------------------------------------------------------------------------
@@ -19,18 +21,24 @@ const ICON_COLLAPSED: &str = "\u{25B6}"; // ▶
 const ICON_ACTIVE: &str = "\u{25CF}"; // ●
 const ICON_DETACHED: &str = "\u{25CB}"; // ○
 const ICON_DEAD: &str = "\u{25CC}"; // ◌
+const ICON_ATTENTION: &str = "\u{25C9}"; // ◉
 
 // ---------------------------------------------------------------------------
 // Tree renderer
 // ---------------------------------------------------------------------------
 
+/// Render the session tree.
+///
+/// Returns `Vec<(tmux_name, Rect)>` for session rows currently needing
+/// attention, so the caller can apply TachyonFX pulse effects on top.
 pub fn render_tree(
     frame: &mut Frame,
     area: Rect,
     tree: &[TreeNode],
     state: &mut TreeState,
     focused: bool,
-) {
+    attention: &HashSet<String>,
+) -> Vec<(String, Rect)> {
     let title_style = if focused {
         theme::style_for(ThemeElement::Primary).add_modifier(Modifier::BOLD)
     } else {
@@ -48,7 +56,7 @@ pub fn render_tree(
     frame.render_widget(block, area);
 
     if inner.width == 0 || inner.height == 0 {
-        return;
+        return Vec::new();
     }
 
     let flat = state.visible_nodes(tree);
@@ -56,8 +64,11 @@ pub fn render_tree(
         let empty = Paragraph::new("No sessions. Press 'n' to create one.")
             .style(Style::new().fg(theme::dim()));
         frame.render_widget(empty, inner);
-        return;
+        return Vec::new();
     }
+
+    // Precompute which collapsed groups contain attention sessions
+    let attention_groups = groups_with_attention(tree, attention);
 
     // Ensure cursor is within viewport
     let viewport_h = inner.height as usize;
@@ -78,6 +89,7 @@ pub fn render_tree(
     ];
 
     let mut lines: Vec<Line> = Vec::with_capacity(viewport_h);
+    let mut attention_rects: Vec<(String, Rect)> = Vec::new();
 
     // Scroll-up indicator
     if start > 0 {
@@ -104,14 +116,20 @@ pub fn render_tree(
             .unwrap_or(&INDENTS[INDENTS.len() - 1]);
         let is_selected = flat_idx == state.cursor_index;
 
+        // Track whether this row is an attention session (for effect overlay)
+        let mut attention_tmux_name: Option<String> = None;
+
         let line = match &node.node {
             FlatNodeKind::Group {
+                id,
                 icon,
                 name,
                 child_count,
                 collapsed,
-                ..
             } => {
+                // Collapsed groups with attention children get hazard-colored icon
+                let has_attention = *collapsed && attention_groups.contains(id);
+
                 let icon_str = if *collapsed {
                     ICON_COLLAPSED
                 } else {
@@ -121,7 +139,11 @@ pub fn render_tree(
                     }
                 };
 
-                let icon_color = theme::primary();
+                let icon_color = if has_attention {
+                    theme::hazard()
+                } else {
+                    theme::primary()
+                };
                 let text_color = if is_selected {
                     theme::text()
                 } else {
@@ -137,17 +159,34 @@ pub fn render_tree(
                 ])
             }
             FlatNodeKind::Session { summary } => {
-                let (icon_str, icon_color, name_color) = match summary.status {
-                    SessionStatus::Active => (ICON_ACTIVE, theme::secondary(), theme::secondary()),
-                    SessionStatus::Detached => {
-                        if time_utils::is_stale(&summary.last_active, 7 * 86400) {
-                            (ICON_DETACHED, theme::dim(), theme::dim())
-                        } else {
-                            (ICON_DETACHED, theme::text(), theme::text())
+                let is_attention = summary
+                    .tmux_name
+                    .as_deref()
+                    .is_some_and(|n| attention.contains(n));
+
+                // Attention rows use dim() as base — the TachyonFX pulse
+                // animates fg from hazard → dim → hazard, covering the full row.
+                let (icon_str, icon_color, name_color) = if is_attention {
+                    (ICON_ATTENTION, theme::dim(), theme::dim())
+                } else {
+                    match summary.status {
+                        SessionStatus::Active => {
+                            (ICON_ACTIVE, theme::secondary(), theme::secondary())
                         }
+                        SessionStatus::Detached => {
+                            if time_utils::is_stale(&summary.last_active, 7 * 86400) {
+                                (ICON_DETACHED, theme::dim(), theme::dim())
+                            } else {
+                                (ICON_DETACHED, theme::text(), theme::text())
+                            }
+                        }
+                        SessionStatus::Dead => (ICON_DEAD, theme::dim(), theme::dim()),
                     }
-                    SessionStatus::Dead => (ICON_DEAD, theme::dim(), theme::dim()),
                 };
+
+                if is_attention {
+                    attention_tmux_name = summary.tmux_name.clone();
+                }
 
                 let rel_time = time_utils::relative_time(&summary.last_active);
 
@@ -190,6 +229,20 @@ pub fn render_tree(
             line
         };
 
+        // Record the Rect for this attention row (before pushing to lines)
+        if let Some(tmux_name) = attention_tmux_name {
+            let row_y = inner.y + lines.len() as u16;
+            attention_rects.push((
+                tmux_name,
+                Rect {
+                    x: inner.x,
+                    y: row_y,
+                    width: inner.width,
+                    height: 1,
+                },
+            ));
+        }
+
         lines.push(line);
     }
 
@@ -203,6 +256,46 @@ pub fn render_tree(
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+
+    attention_rects
+}
+
+// ---------------------------------------------------------------------------
+// Attention helpers
+// ---------------------------------------------------------------------------
+
+/// Collect group IDs that contain (recursively) at least one session needing attention.
+fn groups_with_attention(tree: &[TreeNode], attention: &HashSet<String>) -> HashSet<GroupId> {
+    let mut result = HashSet::new();
+    has_attention_inner(tree, attention, &mut result);
+    result
+}
+
+fn has_attention_inner(
+    nodes: &[TreeNode],
+    attention: &HashSet<String>,
+    result: &mut HashSet<GroupId>,
+) -> bool {
+    let mut found = false;
+    for node in nodes {
+        match node {
+            TreeNode::Session(s) => {
+                if s.tmux_name
+                    .as_deref()
+                    .is_some_and(|n| attention.contains(n))
+                {
+                    found = true;
+                }
+            }
+            TreeNode::Group(g) => {
+                if has_attention_inner(&g.children, attention, result) {
+                    result.insert(g.id);
+                    found = true;
+                }
+            }
+        }
+    }
+    found
 }
 
 // ---------------------------------------------------------------------------
@@ -223,11 +316,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let tree = mock::mock_tree();
         let mut state = TreeState::new(&tree);
+        let attention = HashSet::new();
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &mut state, true);
+                render_tree(frame, area, &tree, &mut state, true, &attention);
             })
             .unwrap();
     }
@@ -242,11 +336,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let tree = mock::mock_tree();
         let mut state = TreeState::new(&tree);
+        let attention = HashSet::new();
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &mut state, false);
+                render_tree(frame, area, &tree, &mut state, false, &attention);
             })
             .unwrap();
     }
@@ -260,11 +355,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let tree: Vec<TreeNode> = vec![];
         let mut state = TreeState::new(&tree);
+        let attention = HashSet::new();
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &mut state, true);
+                render_tree(frame, area, &tree, &mut state, true, &attention);
             })
             .unwrap();
     }
@@ -279,11 +375,36 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let tree = mock::mock_tree();
         let mut state = TreeState::new(&tree);
+        let attention = HashSet::new();
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_tree(frame, area, &tree, &mut state, true);
+                render_tree(frame, area, &tree, &mut state, true, &attention);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_tree_with_attention_no_panic() {
+        use crate::mock;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let tree = mock::mock_tree();
+        let mut state = TreeState::new(&tree);
+        // Add a tmux name that matches one of the mock sessions
+        let mut attention = HashSet::new();
+        attention.insert("mock-session".to_string());
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let rects = render_tree(frame, area, &tree, &mut state, true, &attention);
+                // Should return attention rects (or empty if no mock session matches)
+                let _ = rects;
             })
             .unwrap();
     }

@@ -67,12 +67,23 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     app.area_theme_label =
         widgets::top_bar::render_top_bar(frame, top_bar, session_count, active_count);
 
-    widgets::tree::render_tree(
+    // Don't show attention pulse for the session currently viewed in the interactor
+    let mut visible_attention = app.attention_sessions.clone();
+    if let Some(name) = app
+        .cached_selected
+        .as_ref()
+        .and_then(|s| s.tmux_name.as_deref())
+    {
+        visible_attention.remove(name);
+    }
+
+    let attention_rects = widgets::tree::render_tree(
         frame,
         tree_area,
         &app.tree,
         &mut app.tree_state,
         true, // tree is always "focused" now (no focus switching)
+        &visible_attention,
     );
 
     if let Some(logo_area) = logo_area {
@@ -197,6 +208,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     // Help overlay
     if app.show_help {
         render_help_overlay(frame, area);
+    }
+
+    // Apply TachyonFX attention pulse effects to flagged session rows
+    for (tmux_name, rect) in &attention_rects {
+        if let Some(effect) = app.attention_effects.get_mut(tmux_name) {
+            frame.render_effect(effect, *rect, elapsed.into());
+        }
     }
 
     // Apply TachyonFX boot effects (skip once done)
