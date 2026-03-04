@@ -6,6 +6,7 @@ use rusqlite::{params, Connection};
 
 use crate::types::{
     GroupIcon, GroupId, GroupNode, SessionOrigin, SessionStatus, SessionSummary, TreeNode,
+    WorktreeInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -22,7 +23,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     tmux_name     TEXT,
     status        TEXT NOT NULL DEFAULT 'dead',
     created_by    TEXT NOT NULL DEFAULT 'scanner',
-    created_at    TEXT NOT NULL DEFAULT ''
+    created_at    TEXT NOT NULL DEFAULT '',
+    worktree_branch    TEXT,
+    worktree_repo_root TEXT
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -102,6 +105,8 @@ impl Database {
             "ALTER TABLE sessions ADD COLUMN created_by TEXT NOT NULL DEFAULT 'scanner'",
             "ALTER TABLE sessions ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN claude_session_id TEXT",
+            "ALTER TABLE sessions ADD COLUMN worktree_branch TEXT",
+            "ALTER TABLE sessions ADD COLUMN worktree_repo_root TEXT",
         ];
         for sql in &additions {
             match self.conn.execute_batch(sql) {
@@ -140,16 +145,26 @@ impl Database {
     // -----------------------------------------------------------------------
 
     /// Create a new Nexus-managed session and return its UUID.
-    pub fn create_nexus_session(&self, name: &str, cwd: &str, tmux_name: &str) -> Result<String> {
+    pub fn create_nexus_session(
+        &self,
+        name: &str,
+        cwd: &str,
+        tmux_name: &str,
+        worktree: Option<&WorktreeInfo>,
+    ) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = crate::time_utils::epoch_to_iso(crate::time_utils::now_epoch());
+
+        let wt_branch = worktree.map(|w| w.branch.as_str());
+        let wt_repo = worktree.map(|w| w.repo_root.to_string_lossy().to_string());
 
         self.conn.execute(
             "INSERT INTO sessions
                 (session_id, display_name, cwd, last_active, is_active,
-                 tmux_name, status, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, 1, ?5, 'active', 'nexus', ?6)",
-            params![id, name, cwd, now, tmux_name, now],
+                 tmux_name, status, created_by, created_at,
+                 worktree_branch, worktree_repo_root)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, 'active', 'nexus', ?6, ?7, ?8)",
+            params![id, name, cwd, now, tmux_name, now, wt_branch, wt_repo],
         )?;
 
         Ok(id)
@@ -318,7 +333,8 @@ impl Database {
             "SELECT sg.group_id, s.session_id, s.display_name, s.cwd,
                     s.last_active, s.is_active,
                     s.tmux_name, s.status, s.created_by, s.created_at,
-                    s.claude_session_id
+                    s.claude_session_id,
+                    s.worktree_branch, s.worktree_repo_root
              FROM sessions s
              JOIN session_groups sg ON s.session_id = sg.session_id
              WHERE 1=1 {status_filter}
@@ -439,6 +455,49 @@ impl Database {
     }
 
     // -----------------------------------------------------------------------
+    // Worktree management
+    // -----------------------------------------------------------------------
+
+    /// Clear stale worktree columns for sessions whose cwd directory no longer exists.
+    /// Called at startup for crash recovery.
+    pub fn reconcile_worktrees(&self) -> Result<usize> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_id, cwd FROM sessions WHERE worktree_branch IS NOT NULL")?;
+
+        let stale: Vec<String> = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let cwd: Option<String> = row.get(1)?;
+                Ok((id, cwd))
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|(_, cwd)| {
+                cwd.as_ref()
+                    .map(|p| !std::path::Path::new(p).exists())
+                    .unwrap_or(true)
+            })
+            .map(|(id, _)| id)
+            .collect();
+
+        let count = stale.len();
+        for id in &stale {
+            self.clear_worktree_columns(id)?;
+        }
+        Ok(count)
+    }
+
+    /// Clear the worktree columns for a session (mark as no longer worktree-isolated).
+    pub fn clear_worktree_columns(&self, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET worktree_branch = NULL, worktree_repo_root = NULL
+             WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
@@ -453,7 +512,8 @@ impl Database {
             "SELECT s.session_id, s.display_name, s.cwd,
                     s.last_active, s.is_active,
                     s.tmux_name, s.status, s.created_by, s.created_at,
-                    s.claude_session_id
+                    s.claude_session_id,
+                    s.worktree_branch, s.worktree_repo_root
              FROM sessions s
              WHERE s.session_id NOT IN (SELECT session_id FROM session_groups)
              {status_filter}
@@ -499,17 +559,34 @@ impl Database {
 // Free helpers
 // ---------------------------------------------------------------------------
 
-/// Map a rusqlite Row into a `SessionSummary`, reading 9 columns starting at column 0.
+/// Map a rusqlite Row into a `SessionSummary`, reading 12 columns starting at column 0.
 fn row_to_summary(row: &rusqlite::Row<'_>) -> SessionSummary {
     row_to_summary_at(row, 0)
 }
 
-/// Map a rusqlite Row into a `SessionSummary`, reading 9 columns starting at
+/// Map a rusqlite Row into a `SessionSummary`, reading 12 columns starting at
 /// the given `start` offset.
+///
+/// Column layout (relative to `start`):
+///   0: session_id, 1: display_name, 2: cwd, 3: last_active, 4: is_active,
+///   5: tmux_name, 6: status, 7: created_by, 8: created_at, 9: claude_session_id,
+///   10: worktree_branch, 11: worktree_repo_root
 fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
     let cwd_str: Option<String> = row.get(start + 2).unwrap_or(None);
     let status_str: String = row.get(start + 6).unwrap_or_default();
     let created_by_str: String = row.get(start + 7).unwrap_or_default();
+
+    // Worktree: both columns must be present for a valid WorktreeInfo
+    let wt_branch: Option<String> = row.get(start + 10).unwrap_or(None);
+    let wt_repo: Option<String> = row.get(start + 11).unwrap_or(None);
+    let worktree = match (wt_branch, wt_repo) {
+        (Some(branch), Some(repo)) => Some(WorktreeInfo {
+            branch,
+            repo_root: std::path::PathBuf::from(repo),
+        }),
+        _ => None,
+    };
+
     SessionSummary {
         session_id: row.get(start).unwrap_or_default(),
         display_name: row.get(start + 1).unwrap_or_default(),
@@ -521,6 +598,7 @@ fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
         created_by: SessionOrigin::from_str(&created_by_str),
         created_at: row.get(start + 8).unwrap_or_default(),
         claude_session_id: row.get(start + 9).unwrap_or(None),
+        worktree,
         jsonl_path: None,
     }
 }
@@ -533,6 +611,11 @@ fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
 mod tests {
     use super::*;
 
+    // Helper: shorthand for creating sessions without worktree
+    fn create_session(db: &Database, name: &str, cwd: &str, tmux: &str) -> String {
+        db.create_nexus_session(name, cwd, tmux, None).unwrap()
+    }
+
     #[test]
     fn test_init_schema_idempotent() {
         let db = Database::open_in_memory().unwrap();
@@ -543,9 +626,7 @@ mod tests {
     #[test]
     fn test_create_nexus_session() {
         let db = Database::open_in_memory().unwrap();
-        let id = db
-            .create_nexus_session("my-session", "/tmp/project", "my-session")
-            .unwrap();
+        let id = create_session(&db, "my-session", "/tmp/project", "my-session");
         assert!(!id.is_empty());
 
         let ungrouped = db.get_ungrouped_sessions().unwrap();
@@ -556,7 +637,7 @@ mod tests {
     #[test]
     fn test_update_session_status() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_nexus_session("test", "/tmp", "test").unwrap();
+        let id = create_session(&db, "test", "/tmp", "test");
 
         // Starts as active
         let tree = db.get_tree().unwrap();
@@ -575,7 +656,7 @@ mod tests {
     #[test]
     fn test_update_session_name() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_nexus_session("old-name", "/tmp", "test").unwrap();
+        let id = create_session(&db, "old-name", "/tmp", "test");
 
         db.update_session_name(&id, "new-name", "new-name").unwrap();
 
@@ -588,7 +669,7 @@ mod tests {
     #[test]
     fn test_delete_session() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_nexus_session("doomed", "/tmp", "doomed").unwrap();
+        let id = create_session(&db, "doomed", "/tmp", "doomed");
 
         let gid = db.create_group("G", "").unwrap();
         db.assign_session_to_group(&id, gid).unwrap();
@@ -634,7 +715,7 @@ mod tests {
     #[test]
     fn test_move_session_to_group() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_nexus_session("test", "/tmp", "test").unwrap();
+        let id = create_session(&db, "test", "/tmp", "test");
         let g1 = db.create_group("G1", "").unwrap();
         let g2 = db.create_group("G2", "").unwrap();
 
@@ -658,8 +739,8 @@ mod tests {
     #[test]
     fn test_assign_and_unassign_session() {
         let db = Database::open_in_memory().unwrap();
-        let id1 = db.create_nexus_session("aaa", "/tmp/a", "aaa").unwrap();
-        let id2 = db.create_nexus_session("bbb", "/tmp/b", "bbb").unwrap();
+        let id1 = create_session(&db, "aaa", "/tmp/a", "aaa");
+        let id2 = create_session(&db, "bbb", "/tmp/b", "bbb");
         let gid = db.create_group("Work", "").unwrap();
 
         db.assign_session_to_group(&id1, gid).unwrap();
@@ -675,7 +756,7 @@ mod tests {
     #[test]
     fn test_duplicate_assign_is_ignored() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
+        let id = create_session(&db, "aaa", "/tmp", "aaa");
         let gid = db.create_group("Work", "").unwrap();
 
         db.assign_session_to_group(&id, gid).unwrap();
@@ -696,9 +777,9 @@ mod tests {
     fn test_get_tree_with_groups_and_ungrouped() {
         let db = Database::open_in_memory().unwrap();
 
-        let id1 = db.create_nexus_session("aaa", "/tmp/a", "aaa").unwrap();
-        let _id2 = db.create_nexus_session("bbb", "/tmp/b", "bbb").unwrap();
-        let _id3 = db.create_nexus_session("ccc", "/tmp/c", "ccc").unwrap();
+        let id1 = create_session(&db, "aaa", "/tmp/a", "aaa");
+        let _id2 = create_session(&db, "bbb", "/tmp/b", "bbb");
+        let _id3 = create_session(&db, "ccc", "/tmp/c", "ccc");
 
         let gid = db.create_group("Work", "briefcase").unwrap();
         db.assign_session_to_group(&id1, gid).unwrap();
@@ -729,10 +810,8 @@ mod tests {
     fn test_get_visible_tree_filters_dead() {
         let db = Database::open_in_memory().unwrap();
 
-        let _id1 = db.create_nexus_session("alive", "/tmp/a", "alive").unwrap();
-        let id2 = db
-            .create_nexus_session("dead-one", "/tmp/b", "dead")
-            .unwrap();
+        let _id1 = create_session(&db, "alive", "/tmp/a", "alive");
+        let id2 = create_session(&db, "dead-one", "/tmp/b", "dead");
 
         db.update_session_status(&id2, SessionStatus::Dead).unwrap();
 
@@ -751,7 +830,7 @@ mod tests {
     fn test_get_tree_no_ungrouped_when_all_assigned() {
         let db = Database::open_in_memory().unwrap();
 
-        let id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
+        let id = create_session(&db, "aaa", "/tmp", "aaa");
         let gid = db.create_group("Work", "").unwrap();
         db.assign_session_to_group(&id, gid).unwrap();
 
@@ -770,9 +849,7 @@ mod tests {
     #[test]
     fn test_get_session_cwd() {
         let db = Database::open_in_memory().unwrap();
-        let id = db
-            .create_nexus_session("aaa", "/home/user/aaa", "aaa")
-            .unwrap();
+        let id = create_session(&db, "aaa", "/home/user/aaa", "aaa");
 
         let cwd = db.get_session_cwd(&id).unwrap();
         assert_eq!(cwd, Some("/home/user/aaa".to_string()));
@@ -785,7 +862,7 @@ mod tests {
     fn test_cascade_delete_group_removes_assignments() {
         let db = Database::open_in_memory().unwrap();
 
-        let id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
+        let id = create_session(&db, "aaa", "/tmp", "aaa");
         let gid = db.create_group("Work", "").unwrap();
         db.assign_session_to_group(&id, gid).unwrap();
 
@@ -806,7 +883,7 @@ mod tests {
         db.create_group("Alpha", "").unwrap();
         db.create_group("Bravo", "").unwrap();
 
-        let _id = db.create_nexus_session("aaa", "/tmp", "aaa").unwrap();
+        let _id = create_session(&db, "aaa", "/tmp", "aaa");
         let tree = db.get_tree().unwrap();
 
         // 3 empty named groups + 1 Ungrouped
@@ -881,11 +958,11 @@ mod tests {
         assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo");
 
         // Insert a session with tmux_name "foo".
-        db.create_nexus_session("foo", "/tmp", "foo").unwrap();
+        create_session(&db, "foo", "/tmp", "foo");
         assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo-2");
 
         // Insert "foo-2".
-        db.create_nexus_session("foo2", "/tmp", "foo-2").unwrap();
+        create_session(&db, "foo2", "/tmp", "foo-2");
         assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo-3");
 
         // Unrelated name is unaffected.
@@ -896,13 +973,94 @@ mod tests {
     fn test_next_unique_tmux_name_exclude_self() {
         let db = Database::open_in_memory().unwrap();
 
-        let id = db.create_nexus_session("foo", "/tmp", "foo").unwrap();
+        let id = create_session(&db, "foo", "/tmp", "foo");
 
         // Without exclude: "foo" is taken.
         assert_eq!(db.next_unique_tmux_name("foo", None).unwrap(), "foo-2");
 
         // With exclude: renaming to own name is fine.
         assert_eq!(db.next_unique_tmux_name("foo", Some(&id)).unwrap(), "foo");
+    }
+
+    #[test]
+    fn test_worktree_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        let wt = WorktreeInfo {
+            branch: "nexus/my-feature".to_string(),
+            repo_root: std::path::PathBuf::from("/home/user/repo"),
+        };
+        let id = db
+            .create_nexus_session(
+                "wt-test",
+                "/home/user/repo/.worktrees/my-feature",
+                "wt-test",
+                Some(&wt),
+            )
+            .unwrap();
+
+        let tree = db.get_tree().unwrap();
+        let sess = find_session(&tree, &id).unwrap();
+        assert!(sess.worktree.is_some());
+        let wt_read = sess.worktree.as_ref().unwrap();
+        assert_eq!(wt_read.branch, "nexus/my-feature");
+        assert_eq!(
+            wt_read.repo_root,
+            std::path::PathBuf::from("/home/user/repo")
+        );
+    }
+
+    #[test]
+    fn test_worktree_none_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        let id = create_session(&db, "plain", "/tmp", "plain");
+
+        let tree = db.get_tree().unwrap();
+        let sess = find_session(&tree, &id).unwrap();
+        assert!(sess.worktree.is_none());
+    }
+
+    #[test]
+    fn test_reconcile_worktrees() {
+        let db = Database::open_in_memory().unwrap();
+        // Create a session with a worktree pointing to a non-existent path
+        let wt = WorktreeInfo {
+            branch: "nexus/stale".to_string(),
+            repo_root: std::path::PathBuf::from("/tmp"),
+        };
+        let id = db
+            .create_nexus_session(
+                "stale",
+                "/nonexistent/path/.worktrees/stale",
+                "stale",
+                Some(&wt),
+            )
+            .unwrap();
+
+        let cleaned = db.reconcile_worktrees().unwrap();
+        assert_eq!(cleaned, 1);
+
+        // Worktree columns should be cleared
+        let tree = db.get_tree().unwrap();
+        let sess = find_session(&tree, &id).unwrap();
+        assert!(sess.worktree.is_none());
+    }
+
+    #[test]
+    fn test_clear_worktree_columns() {
+        let db = Database::open_in_memory().unwrap();
+        let wt = WorktreeInfo {
+            branch: "nexus/feat".to_string(),
+            repo_root: std::path::PathBuf::from("/tmp"),
+        };
+        let id = db
+            .create_nexus_session("feat", "/tmp/.worktrees/feat", "feat", Some(&wt))
+            .unwrap();
+
+        db.clear_worktree_columns(&id).unwrap();
+
+        let tree = db.get_tree().unwrap();
+        let sess = find_session(&tree, &id).unwrap();
+        assert!(sess.worktree.is_none());
     }
 
     fn count_sessions(tree: &[TreeNode]) -> usize {

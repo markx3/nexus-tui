@@ -372,8 +372,12 @@ fn render_text_input(frame: &mut Frame, panel_area: Rect, app: &App) {
 
 fn render_confirm(frame: &mut Frame, panel_area: Rect, app: &App) {
     let message = match &app.input_context {
+        Some(InputContext::ConfirmDeleteSession {
+            worktree: Some(_), ..
+        }) => "Delete session AND worktree? (y/n/s=session only)",
         Some(InputContext::ConfirmDeleteSession { .. }) => "Delete this session? (y/n)",
         Some(InputContext::ConfirmDeleteGroup { .. }) => "Delete this group? (y/n)",
+        Some(InputContext::NewSessionWorktree { .. }) => "Isolate in git worktree? (y/n)",
         _ => "Confirm? (y/n)",
     };
 

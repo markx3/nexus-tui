@@ -34,6 +34,9 @@ pub enum Commands {
         /// Assign to group (created if it doesn't exist)
         #[arg(short, long)]
         group: Option<String>,
+        /// Create an isolated git worktree for this session
+        #[arg(short = 'w', long)]
+        worktree: bool,
     },
     /// Launch/resume a session in tmux
     Launch {
@@ -66,6 +69,9 @@ pub enum Commands {
     Delete {
         /// Session ID
         session_id: String,
+        /// Also remove the git worktree (if session has one)
+        #[arg(long)]
+        remove_worktree: bool,
     },
     /// Rename a session
     Rename {

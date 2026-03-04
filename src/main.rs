@@ -6,6 +6,7 @@ pub(crate) mod config;
 mod conversation;
 pub(crate) mod db;
 mod feedback_scanner;
+pub(crate) mod git;
 #[cfg(test)]
 mod mock;
 mod path_complete;
@@ -61,7 +62,12 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 }
             }
         }
-        cli::Commands::New { name, cwd, group } => {
+        cli::Commands::New {
+            name,
+            cwd,
+            group,
+            worktree,
+        } => {
             let _lock = acquire_lock()?;
             let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
             let tmux_name = sanitize_tmux_name(&name);
@@ -71,7 +77,35 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| "/tmp".to_string())
             });
-            let id = db.create_nexus_session(&name, &cwd, &tmux_name)?;
+
+            let wt_info = if worktree {
+                let repo = git::detect_repo(&cwd).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("'{}' is not inside a git repository", cwd)
+                })?;
+                let branch = git::sanitize_branch_name(&name);
+                if git::branch_exists(&repo.root, &branch) {
+                    color_eyre::eyre::bail!("Branch '{}' already exists", branch);
+                }
+                let sanitized_dir = git::sanitize_branch_name(&name).replace('/', "-");
+                let wt_path = repo.root.join(".worktrees").join(&sanitized_dir);
+                let result = git::create_worktree(&repo.root, &name, &wt_path, &branch)?;
+                Some((
+                    result.path.to_string_lossy().to_string(),
+                    types::WorktreeInfo {
+                        branch: result.branch,
+                        repo_root: repo.root,
+                    },
+                ))
+            } else {
+                None
+            };
+
+            let (session_cwd, wt_ref) = match &wt_info {
+                Some((wt_cwd, info)) => (wt_cwd.as_str(), Some(info)),
+                None => (cwd.as_str(), None),
+            };
+
+            let id = db.create_nexus_session(&name, session_cwd, &tmux_name, wt_ref)?;
 
             if let Some(group_name) = group {
                 let gid = match db.get_group_id_by_name(&group_name)? {
@@ -82,7 +116,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
 
             if tmux.is_available() {
-                tmux.launch_claude_session(&tmux_name, &cwd, None)?;
+                tmux.launch_claude_session(&tmux_name, session_cwd, None)?;
             }
             println!("Created session '{}' ({})", name, id);
         }
@@ -163,15 +197,32 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 print!("{}", raw);
             }
         }
-        cli::Commands::Delete { session_id } => {
+        cli::Commands::Delete {
+            session_id,
+            remove_worktree,
+        } => {
             let _lock = acquire_lock()?;
             // Kill tmux session if active
             let tree = db.get_tree()?;
-            if let Some(session) = find_session_in_tree(&tree, &session_id) {
-                if session.status == types::SessionStatus::Active {
-                    if let Some(ref tmux_name) = session.tmux_name {
+            let session = find_session_in_tree(&tree, &session_id);
+            if let Some(s) = session {
+                if s.status == types::SessionStatus::Active {
+                    if let Some(ref tmux_name) = s.tmux_name {
                         let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
                         let _ = tmux.kill_session(tmux_name);
+                    }
+                }
+                // Handle worktree cleanup
+                if let Some(ref wt) = s.worktree {
+                    if remove_worktree {
+                        let wt_path = s.cwd.as_deref();
+                        if let Some(wt_path) = wt_path {
+                            git::remove_worktree(&wt.repo_root, wt_path, &wt.branch)?;
+                        }
+                    } else {
+                        eprintln!(
+                            "Warning: session has a worktree. Use --remove-worktree to also clean it up."
+                        );
                     }
                 }
             }
@@ -257,6 +308,9 @@ fn run_tui() -> Result<()> {
         }
     }
 
+    // Clean up stale worktree references (crash recovery)
+    let _ = db.reconcile_worktrees();
+
     let tree = db.get_visible_tree(false)?;
     let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
     let tmux_available = tmux.is_available();
@@ -327,6 +381,10 @@ fn print_session_detail(s: &types::SessionSummary) {
     println!("Origin:  {}", s.created_by.as_str());
     if let Some(ref tmux) = s.tmux_name {
         println!("Tmux:    {}", tmux);
+    }
+    if let Some(ref wt) = s.worktree {
+        println!("Branch:  {}", wt.branch);
+        println!("Repo:    {}", wt.repo_root.display());
     }
     println!("Active:  {}", s.is_active);
     println!("Last:    {}", s.last_active);

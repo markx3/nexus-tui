@@ -2,6 +2,13 @@ use std::path::PathBuf;
 
 use ratatui::text::Text;
 
+/// Worktree metadata for isolated sessions. All-or-nothing: if present, all fields are set.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorktreeInfo {
+    pub branch: String,
+    pub repo_root: PathBuf,
+}
+
 pub type SessionId = String;
 pub type GroupId = i64;
 
@@ -99,9 +106,14 @@ pub enum InputContext {
         group_id: GroupId,
     },
     NewGroupName,
+    NewSessionWorktree {
+        name: String,
+        cwd: String,
+    },
     ConfirmDeleteSession {
         session_id: String,
         tmux_name: Option<String>,
+        worktree: Option<WorktreeInfo>,
     },
     ConfirmDeleteGroup {
         group_id: GroupId,
@@ -112,6 +124,7 @@ pub enum InputContext {
     NewSessionGroup {
         name: String,
         cwd: String,
+        worktree: bool,
     },
 }
 
@@ -160,6 +173,7 @@ pub struct SessionSummary {
     pub created_by: SessionOrigin,
     pub created_at: String,
     pub claude_session_id: Option<String>,
+    pub worktree: Option<WorktreeInfo>,
     #[serde(skip)]
     pub jsonl_path: Option<PathBuf>,
 }

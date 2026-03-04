@@ -36,7 +36,7 @@ pub enum FlatNodeKind {
         collapsed: bool,
     },
     Session {
-        summary: SessionSummary,
+        summary: Box<SessionSummary>,
     },
 }
 
@@ -71,7 +71,9 @@ fn flatten_tree(
             TreeNode::Session(s) => {
                 out.push(FlatNode {
                     depth,
-                    node: FlatNodeKind::Session { summary: s.clone() },
+                    node: FlatNodeKind::Session {
+                        summary: Box::new(s.clone()),
+                    },
                 });
             }
         }

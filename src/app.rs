@@ -17,6 +17,7 @@ use crate::capture_worker;
 use crate::config::NexusConfig;
 use crate::db::Database;
 use crate::feedback_scanner;
+use crate::git;
 use crate::theme;
 use crate::tmux::{sanitize_tmux_name, TmuxManager};
 use crate::types::*;
@@ -116,6 +117,21 @@ pub struct App {
     pub(crate) attention_sessions: HashSet<String>,
     feedback_rx: Option<mpsc::Receiver<HashSet<String>>>,
     pub(crate) attention_effects: HashMap<String, Effect>,
+    // Pending background worktree creation
+    worktree_rx: Option<mpsc::Receiver<color_eyre::Result<git::WorktreeResult>>>,
+    worktree_pending_ctx: Option<PendingWorktreeCtx>,
+    // Pending background worktree teardown
+    worktree_teardown_rx: Option<mpsc::Receiver<color_eyre::Result<()>>>,
+    worktree_teardown_session_id: Option<String>,
+}
+
+/// Context stored while a worktree is being created on a background thread.
+struct PendingWorktreeCtx {
+    name: String,
+    cwd: String, // the worktree path (will become session cwd)
+    repo_root: String,
+    branch: String,
+    group_id: Option<GroupId>,
 }
 
 impl App {
@@ -204,6 +220,10 @@ impl App {
             attention_sessions: HashSet::new(),
             feedback_rx,
             attention_effects: HashMap::new(),
+            worktree_rx: None,
+            worktree_pending_ctx: None,
+            worktree_teardown_rx: None,
+            worktree_teardown_session_id: None,
         }
     }
 
@@ -251,6 +271,10 @@ impl App {
                     self.dirty = true;
                 }
             }
+
+            // Poll background worktree operations
+            self.poll_worktree_pending();
+            self.poll_worktree_teardown();
 
             // Poll tmux for active sessions periodically
             if self.tmux_available && now.duration_since(self.last_tmux_poll) >= TMUX_POLL_INTERVAL
@@ -869,23 +893,13 @@ impl App {
                 self.refresh_path_suggestions();
             }
             InputContext::NewSessionCwd { name } => {
-                match self.db.get_all_groups() {
-                    Ok(groups) if !groups.is_empty() => {
-                        // Prepend "Ungrouped" sentinel (id 0)
-                        let mut picker = vec![(0i64, "Ungrouped".to_string())];
-                        picker.extend(groups);
-                        self.picker_cursor = self.hovered_group_picker_index(&picker);
-                        self.picker_groups = picker;
-                        self.input_mode = InputMode::GroupPicker;
-                        self.input_context =
-                            Some(InputContext::NewSessionGroup { name, cwd: buffer });
-                    }
-                    _ => {
-                        // No groups — create ungrouped
-                        self.create_session(&name, &buffer, None);
-                        self.input_mode = InputMode::Normal;
-                        self.input_buffer.clear();
-                    }
+                // If CWD is a git repo, offer worktree isolation
+                if git::detect_repo(&buffer).is_some() {
+                    self.input_mode = InputMode::Confirm;
+                    self.input_context =
+                        Some(InputContext::NewSessionWorktree { name, cwd: buffer });
+                } else {
+                    self.transition_to_group_or_create(name, buffer, false);
                 }
             }
             InputContext::RenameSession { session_id } => {
@@ -939,11 +953,91 @@ impl App {
         }
     }
 
+    /// Transition from CWD step to group picker or direct creation.
+    fn transition_to_group_or_create(&mut self, name: String, cwd: String, worktree: bool) {
+        match self.db.get_all_groups() {
+            Ok(groups) if !groups.is_empty() => {
+                let mut picker = vec![(0i64, "Ungrouped".to_string())];
+                picker.extend(groups);
+                self.picker_cursor = self.hovered_group_picker_index(&picker);
+                self.picker_groups = picker;
+                self.input_mode = InputMode::GroupPicker;
+                self.input_context = Some(InputContext::NewSessionGroup {
+                    name,
+                    cwd,
+                    worktree,
+                });
+            }
+            _ => {
+                self.create_session_maybe_worktree(&name, &cwd, None, worktree);
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Confirm handling
     // -----------------------------------------------------------------------
 
     fn handle_confirm_key(&mut self, key: KeyEvent) {
+        // Worktree confirm: y = with worktree, n = without worktree, Esc = cancel
+        if matches!(
+            self.input_context,
+            Some(InputContext::NewSessionWorktree { .. })
+        ) {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(InputContext::NewSessionWorktree { name, cwd }) =
+                        self.input_context.take()
+                    {
+                        self.input_mode = InputMode::Normal;
+                        self.transition_to_group_or_create(name, cwd, true);
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    if let Some(InputContext::NewSessionWorktree { name, cwd }) =
+                        self.input_context.take()
+                    {
+                        self.input_mode = InputMode::Normal;
+                        self.transition_to_group_or_create(name, cwd, false);
+                    }
+                }
+                KeyCode::Esc => {
+                    self.input_mode = InputMode::Normal;
+                    self.input_context = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+        // Worktree delete: 's' = session only (leave worktree on disk)
+        if let KeyCode::Char('s') | KeyCode::Char('S') = key.code {
+            if let Some(InputContext::ConfirmDeleteSession {
+                worktree: Some(_), ..
+            }) = &self.input_context
+            {
+                // Take context and delete session only
+                if let Some(InputContext::ConfirmDeleteSession {
+                    session_id,
+                    tmux_name,
+                    ..
+                }) = self.input_context.take()
+                {
+                    self.input_mode = InputMode::Normal;
+                    if let Some(ref name) = tmux_name {
+                        let _ = self.tmux.kill_session(name);
+                    }
+                    if let Err(e) = self.db.delete_session(&session_id) {
+                        self.status_message = Some((format!("delete failed: {e}"), Instant::now()));
+                    }
+                    self.jsonl_snapshots.remove(&session_id);
+                    self.refresh_tree();
+                    self.dirty = true;
+                }
+                return;
+            }
+        }
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let ctx = self.input_context.take();
@@ -965,10 +1059,38 @@ impl App {
             InputContext::ConfirmDeleteSession {
                 session_id,
                 tmux_name,
+                worktree,
             } => {
                 // Kill tmux if active
                 if let Some(ref name) = tmux_name {
                     let _ = self.tmux.kill_session(name);
+                }
+                // If worktree exists, remove on background thread, then delete session
+                if let Some(wt) = worktree {
+                    let cwd = self
+                        .db
+                        .get_session_cwd(&session_id)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    let wt_path = std::path::PathBuf::from(&cwd);
+                    if wt_path.exists() {
+                        self.status_message =
+                            Some(("Removing worktree...".to_string(), Instant::now()));
+                        self.dirty = true;
+                        let repo_root = wt.repo_root.clone();
+                        let branch = wt.branch.clone();
+                        let (tx, rx) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            let result = git::remove_worktree(&repo_root, &wt_path, &branch);
+                            let _ = tx.send(result);
+                        });
+                        self.worktree_teardown_rx = Some(rx);
+                        self.worktree_teardown_session_id = Some(session_id);
+                        return;
+                    }
+                    // Worktree dir doesn't exist — clear columns and proceed
+                    let _ = self.db.clear_worktree_columns(&session_id);
                 }
                 if let Err(e) = self.db.delete_session(&session_id) {
                     self.status_message = Some((format!("delete failed: {e}"), Instant::now()));
@@ -1022,10 +1144,14 @@ impl App {
                             }
                         }
                     }
-                    Some(InputContext::NewSessionGroup { name, cwd }) => {
+                    Some(InputContext::NewSessionGroup {
+                        name,
+                        cwd,
+                        worktree,
+                    }) => {
                         // gid 0 is the "Ungrouped" sentinel
                         let group = gid.filter(|&id| id != 0);
-                        self.create_session(&name, &cwd, group);
+                        self.create_session_maybe_worktree(&name, &cwd, group, worktree);
                     }
                     other => {
                         self.input_context = other;
@@ -1187,12 +1313,14 @@ impl App {
         let target = self.tree_state.selected_target(&self.tree);
         match target {
             Some(SelectionTarget::Session(id)) => {
-                let tmux_name =
-                    find_session_in_tree(&self.tree, &id).and_then(|s| s.tmux_name.clone());
+                let session = find_session_in_tree(&self.tree, &id);
+                let tmux_name = session.and_then(|s| s.tmux_name.clone());
+                let worktree = session.and_then(|s| s.worktree.clone());
                 self.input_mode = InputMode::Confirm;
                 self.input_context = Some(InputContext::ConfirmDeleteSession {
                     session_id: id,
                     tmux_name,
+                    worktree,
                 });
             }
             Some(SelectionTarget::Group(gid)) => {
@@ -1236,7 +1364,7 @@ impl App {
             .next_unique_tmux_name(&tmux_name, None)
             .unwrap_or(tmux_name);
         let snapshot = snapshot_jsonl_stems(cwd);
-        match self.db.create_nexus_session(name, cwd, &tmux_name) {
+        match self.db.create_nexus_session(name, cwd, &tmux_name, None) {
             Ok(id) => {
                 self.jsonl_snapshots.insert(id.clone(), snapshot);
                 if let Some(gid) = group_id {
@@ -1264,6 +1392,168 @@ impl App {
                 self.status_message = Some((format!("create failed: {e}"), Instant::now()));
             }
         }
+    }
+
+    /// Create a session, optionally with worktree isolation.
+    /// If worktree=true, spawns a background thread for git worktree creation.
+    fn create_session_maybe_worktree(
+        &mut self,
+        name: &str,
+        cwd: &str,
+        group_id: Option<GroupId>,
+        worktree: bool,
+    ) {
+        if !worktree {
+            self.create_session(name, cwd, group_id);
+            return;
+        }
+
+        let repo = match git::detect_repo(cwd) {
+            Some(r) => r,
+            None => {
+                self.status_message = Some(("Not a git repository".to_string(), Instant::now()));
+                return;
+            }
+        };
+
+        let branch = git::sanitize_branch_name(name);
+        if git::branch_exists(&repo.root, &branch) {
+            self.status_message = Some((
+                format!("Branch '{}' already exists", branch),
+                Instant::now(),
+            ));
+            return;
+        }
+
+        let sanitized_dir = git::sanitize_branch_name(name).replace('/', "-");
+        let worktree_path = repo.root.join(".worktrees").join(&sanitized_dir);
+
+        self.status_message = Some(("Creating worktree...".to_string(), Instant::now()));
+        self.dirty = true;
+
+        // Spawn background thread for worktree creation
+        let repo_root = repo.root.clone();
+        let session_name = name.to_string();
+        let wt_path = worktree_path.clone();
+        let branch_clone = branch.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = git::create_worktree(&repo_root, &session_name, &wt_path, &branch_clone);
+            let _ = tx.send(result);
+        });
+
+        self.worktree_rx = Some(rx);
+        self.worktree_pending_ctx = Some(PendingWorktreeCtx {
+            name: name.to_string(),
+            cwd: worktree_path.to_string_lossy().to_string(),
+            repo_root: repo.root.to_string_lossy().to_string(),
+            branch,
+            group_id,
+        });
+    }
+
+    /// Called from event loop to check if background worktree creation finished.
+    fn poll_worktree_pending(&mut self) {
+        let result = match self.worktree_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            Some(r) => r,
+            None => return,
+        };
+
+        self.worktree_rx = None;
+        let ctx = match self.worktree_pending_ctx.take() {
+            Some(c) => c,
+            None => return,
+        };
+
+        match result {
+            Ok(_wt) => {
+                let wt_info = WorktreeInfo {
+                    branch: ctx.branch,
+                    repo_root: std::path::PathBuf::from(&ctx.repo_root),
+                };
+                // Create session with worktree info; cwd = worktree path
+                let tmux_name = sanitize_tmux_name(&ctx.name);
+                let tmux_name = self
+                    .db
+                    .next_unique_tmux_name(&tmux_name, None)
+                    .unwrap_or(tmux_name);
+                let snapshot = snapshot_jsonl_stems(&ctx.cwd);
+                match self
+                    .db
+                    .create_nexus_session(&ctx.name, &ctx.cwd, &tmux_name, Some(&wt_info))
+                {
+                    Ok(id) => {
+                        self.jsonl_snapshots.insert(id.clone(), snapshot);
+                        if let Some(gid) = ctx.group_id {
+                            if let Err(e) = self.db.assign_session_to_group(&id, gid) {
+                                self.status_message =
+                                    Some((format!("group assign failed: {e}"), Instant::now()));
+                            }
+                        }
+                        if self.tmux_available {
+                            if let Err(e) =
+                                self.tmux.launch_claude_session(&tmux_name, &ctx.cwd, None)
+                            {
+                                self.status_message =
+                                    Some((format!("tmux launch failed: {e}"), Instant::now()));
+                                self.refresh_tree();
+                                return;
+                            }
+                            let _ = self.tmux.configure_server();
+                        }
+                        self.status_message =
+                            Some(("Worktree created".to_string(), Instant::now()));
+                        self.selection.selected = Some(SelectionTarget::Session(id));
+                        self.refresh_tree();
+                        self.sync_interactor_to_selection();
+                        self.ensure_session_launched();
+                    }
+                    Err(e) => {
+                        self.status_message = Some((format!("create failed: {e}"), Instant::now()));
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_message = Some((format!("worktree failed: {e}"), Instant::now()));
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Called from event loop to check if background worktree teardown finished.
+    fn poll_worktree_teardown(&mut self) {
+        let result = match self
+            .worktree_teardown_rx
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            Some(r) => r,
+            None => return,
+        };
+
+        self.worktree_teardown_rx = None;
+        let session_id = match self.worktree_teardown_session_id.take() {
+            Some(id) => id,
+            None => return,
+        };
+
+        match result {
+            Ok(()) => {
+                if let Err(e) = self.db.delete_session(&session_id) {
+                    self.status_message = Some((format!("delete failed: {e}"), Instant::now()));
+                } else {
+                    self.status_message =
+                        Some(("Session and worktree deleted".to_string(), Instant::now()));
+                }
+                self.jsonl_snapshots.remove(&session_id);
+                self.refresh_tree();
+            }
+            Err(e) => {
+                self.status_message =
+                    Some((format!("worktree removal failed: {e}"), Instant::now()));
+            }
+        }
+        self.dirty = true;
     }
 
     /// Launch a detached tmux session in the background for the currently

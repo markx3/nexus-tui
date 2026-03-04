@@ -200,6 +200,14 @@ pub fn render_tree(
                     Span::styled(format!("  {}", rel_time), Style::new().fg(theme::dim())),
                 ];
 
+                // Show worktree branch badge
+                if let Some(ref wt) = summary.worktree {
+                    spans.push(Span::styled(
+                        format!(" [{}]", wt.branch),
+                        Style::new().fg(theme::accent()),
+                    ));
+                }
+
                 // Show status tag for non-active
                 if summary.status == SessionStatus::Dead {
                     spans.push(Span::styled(

@@ -15,6 +15,7 @@ Nexus gives you a persistent, organized workspace for managing multiple Claude C
 - **Fullscreen attach** — jump into any session with `Alt+f`, detach back to the dashboard
 - **8 color themes** — cycle with `Alt+t`, persisted across restarts
 - **Session lifecycle** — create, rename, move, delete, and kill sessions from the TUI or CLI
+- **Worktree isolation** — optionally create a dedicated git worktree per session for branch-level isolation
 - **Claude session resume** — automatically detects Claude session IDs for `--resume` support
 - **CLI + JSON output** — scriptable interface for all operations (`nexus list --json`)
 - **Lazygit integration** — open lazygit in any session's working directory with `Alt+l`
@@ -90,6 +91,7 @@ nexus list --all        # Include dead/past sessions
 nexus show <id>         # Show session details (ID prefix supported)
 nexus new <name>        # Create and launch a new session
 nexus new <name> -c /path -g mygroup  # With cwd and group
+nexus new <name> -w     # Create with an isolated git worktree
 nexus launch <id>       # Launch/resume a session in tmux
 nexus kill <name>       # Kill a running tmux session
 nexus groups            # List configured groups
@@ -97,6 +99,7 @@ nexus send <name> <text>    # Send text to a tmux session
 nexus capture <name>        # Capture pane contents
 nexus capture <name> --strip  # Capture without ANSI codes
 nexus delete <id>       # Delete a session from the database
+nexus delete <id> --remove-worktree  # Also clean up the git worktree
 nexus rename <id> <name>    # Rename a session
 nexus move <id> --group <name>  # Move session to a group
 nexus group-create <name>   # Create a new group
@@ -139,6 +142,14 @@ Groups organize your sessions in the tree view. Create them in the config file o
 | 5 | Synthwave Nights |
 | 6 | Retrowave Pure *(default)* |
 | 7 | Matrix Phosphor |
+
+### Worktree Isolation
+
+When creating a session in a git repo, Nexus can create a dedicated git worktree so each session works on an isolated branch. In the TUI, you'll be prompted with "Isolate in git worktree? (y/n)" after entering a CWD that is a git repo. From the CLI, use `nexus new <name> -w`.
+
+Worktree sessions show a branch badge (e.g., `[nexus/my-feature]`) in the session tree. When deleting a worktree session, you'll be prompted with `y` (delete both), `n` (cancel), or `s` (session only, keep worktree on disk).
+
+**Convention hooks:** If `.nexus/on-worktree-create` exists in the repo root and is executable, Nexus delegates worktree creation to it instead of running `git worktree add`. Similarly for `.nexus/on-worktree-teardown`. Hooks receive environment variables: `NEXUS_WORKTREE_PATH`, `NEXUS_BRANCH`, `NEXUS_SESSION_NAME`, `NEXUS_REPO_ROOT`.
 
 ## Terminal Setup (macOS)
 
