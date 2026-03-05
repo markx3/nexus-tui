@@ -147,7 +147,20 @@ Groups organize your sessions in the tree view. Create them in the config file o
 
 When creating a session in a git repo, Nexus can create a dedicated git worktree so each session works on an isolated branch. In the TUI, you'll be prompted with "Isolate in git worktree? (y/n)" after entering a CWD that is a git repo. From the CLI, use `nexus new <name> -w`.
 
-Worktree sessions show a branch badge (e.g., `[nexus/my-feature]`) in the session tree. When deleting a worktree session, you'll be prompted with `y` (delete both), `n` (cancel), or `s` (session only, keep worktree on disk).
+Worktree sessions show a branch badge (e.g., `[my-app/fix-bug]`) in the session tree. When deleting a worktree session, you'll be prompted with `y` (delete both), `n` (cancel), or `s` (session only, keep worktree on disk).
+
+**Branch prefix:** By default, worktree branches are prefixed with the repo directory name (e.g., `my-app/fix-bug`). You can override this globally in `~/.config/nexus/config.toml` or per-repo in `.nexus.toml` at the repo root:
+
+```toml
+# ~/.config/nexus/config.toml (global)
+[worktree]
+branch_prefix = "team"    # all repos: team/fix-bug
+
+# .nexus.toml (per-repo, overrides global)
+[worktree]
+branch_prefix = "custom"  # this repo: custom/fix-bug
+branch_prefix = ""        # disable prefix: fix-bug
+```
 
 **Convention hooks:** If `.nexus/on-worktree-create` exists in the repo root and is executable, Nexus delegates worktree creation to it instead of running `git worktree add`. Similarly for `.nexus/on-worktree-teardown`. Hooks receive environment variables: `NEXUS_WORKTREE_PATH`, `NEXUS_BRANCH`, `NEXUS_SESSION_NAME`, `NEXUS_REPO_ROOT`.
 

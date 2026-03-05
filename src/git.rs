@@ -6,6 +6,8 @@ use color_eyre::eyre::WrapErr;
 use color_eyre::eyre::{bail, Result};
 use wait_timeout::ChildExt;
 
+use crate::repo_config;
+
 const HOOK_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
@@ -81,9 +83,57 @@ pub fn branch_exists(repo_root: &Path, branch: &str) -> bool {
 
 /// Sanitize a session name into a valid git branch name.
 /// ALLOWLIST approach: only permit [a-zA-Z0-9._/-].
-/// Always prefix with `nexus/`.
-pub fn sanitize_branch_name(session_name: &str) -> String {
-    let filtered: String = session_name
+/// Prefixes with the given string (e.g. repo dir name). Empty prefix = no prefix.
+pub fn sanitize_branch_name(session_name: &str, prefix: &str) -> String {
+    let sanitized = sanitize_ref_component(session_name);
+
+    if sanitized.is_empty() {
+        if prefix.is_empty() {
+            "session".to_string()
+        } else {
+            format!("{prefix}/session")
+        }
+    } else if prefix.is_empty() {
+        sanitized
+    } else {
+        format!("{prefix}/{sanitized}")
+    }
+}
+
+/// Resolve the worktree branch prefix.
+/// Priority: per-repo `.nexus.toml` > global config > repo directory name.
+pub fn resolve_branch_prefix(repo_root: &Path, global_prefix: Option<&str>) -> String {
+    // 1. Check per-repo .nexus.toml
+    let repo_cfg = repo_config::load_repo_config(repo_root);
+    if let Some(prefix) = repo_cfg.worktree.branch_prefix {
+        return normalize_prefix(&prefix);
+    }
+
+    // 2. Check global config
+    if let Some(prefix) = global_prefix {
+        return normalize_prefix(prefix);
+    }
+
+    // 3. Auto-detect from repo directory name
+    let dir_name = repo_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("session");
+    normalize_prefix(dir_name)
+}
+
+/// Normalize a prefix string: replace dots/underscores with dashes, then sanitize.
+fn normalize_prefix(raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    let replaced = raw.replace(['.', '_'], "-");
+    sanitize_ref_component(&replaced)
+}
+
+/// Core sanitization: allowlist filter, collapse dashes/slashes, strip unsafe sequences.
+fn sanitize_ref_component(input: &str) -> String {
+    let filtered: String = input
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '/' || c == '-' {
@@ -128,11 +178,7 @@ pub fn sanitize_branch_name(session_name: &str) -> String {
         result.truncate(result.len() - 5);
     }
 
-    if result.is_empty() {
-        "nexus/session".to_string()
-    } else {
-        format!("nexus/{result}")
-    }
+    result
 }
 
 /// Create a worktree. Checks for `.nexus/on-worktree-create` convention hook.
@@ -379,69 +425,185 @@ fn hook_env_vars(
 mod tests {
     use super::*;
 
+    // --- sanitize_branch_name with prefix ---
+
     #[test]
     fn test_sanitize_branch_name_basic() {
-        assert_eq!(sanitize_branch_name("my-feature"), "nexus/my-feature");
+        assert_eq!(
+            sanitize_branch_name("my-feature", "nexus"),
+            "nexus/my-feature"
+        );
     }
 
     #[test]
     fn test_sanitize_branch_name_spaces() {
-        assert_eq!(sanitize_branch_name("my feature"), "nexus/my-feature");
+        assert_eq!(
+            sanitize_branch_name("my feature", "nexus"),
+            "nexus/my-feature"
+        );
     }
 
     #[test]
     fn test_sanitize_branch_name_special_chars() {
-        assert_eq!(sanitize_branch_name("hello!@#$world"), "nexus/hello-world");
+        assert_eq!(
+            sanitize_branch_name("hello!@#$world", "nexus"),
+            "nexus/hello-world"
+        );
     }
 
     #[test]
     fn test_sanitize_branch_name_unicode() {
-        assert_eq!(sanitize_branch_name("café☕"), "nexus/caf");
+        assert_eq!(sanitize_branch_name("café☕", "nexus"), "nexus/caf");
     }
 
     #[test]
     fn test_sanitize_branch_name_empty() {
-        assert_eq!(sanitize_branch_name(""), "nexus/session");
+        assert_eq!(sanitize_branch_name("", "nexus"), "nexus/session");
     }
 
     #[test]
     fn test_sanitize_branch_name_only_special() {
-        assert_eq!(sanitize_branch_name("!!!"), "nexus/session");
+        assert_eq!(sanitize_branch_name("!!!", "nexus"), "nexus/session");
     }
 
     #[test]
     fn test_sanitize_branch_name_force_flag() {
-        // --force should be sanitized to nexus/force (dashes stripped from edges)
-        assert_eq!(sanitize_branch_name("--force"), "nexus/force");
+        assert_eq!(sanitize_branch_name("--force", "nexus"), "nexus/force");
     }
 
     #[test]
     fn test_sanitize_branch_name_dash_b() {
-        assert_eq!(sanitize_branch_name("-b"), "nexus/b");
+        assert_eq!(sanitize_branch_name("-b", "nexus"), "nexus/b");
     }
 
     #[test]
     fn test_sanitize_branch_name_path_escape() {
-        // `..` sequences are stripped to prevent git ref traversal
-        assert_eq!(sanitize_branch_name("../escape"), "nexus/escape");
+        assert_eq!(sanitize_branch_name("../escape", "nexus"), "nexus/escape");
     }
 
     #[test]
     fn test_sanitize_branch_name_dot_lock() {
-        assert_eq!(sanitize_branch_name("my-branch.lock"), "nexus/my-branch");
+        assert_eq!(
+            sanitize_branch_name("my-branch.lock", "nexus"),
+            "nexus/my-branch"
+        );
     }
 
     #[test]
     fn test_sanitize_branch_name_consecutive_dashes() {
-        assert_eq!(sanitize_branch_name("a---b"), "nexus/a-b");
+        assert_eq!(sanitize_branch_name("a---b", "nexus"), "nexus/a-b");
     }
 
     #[test]
     fn test_sanitize_branch_name_dots_and_slashes() {
         assert_eq!(
-            sanitize_branch_name("feat/v2.0/thing"),
+            sanitize_branch_name("feat/v2.0/thing", "nexus"),
             "nexus/feat/v2.0/thing"
         );
+    }
+
+    // --- sanitize_branch_name with custom/empty prefix ---
+
+    #[test]
+    fn test_sanitize_branch_name_custom_prefix() {
+        assert_eq!(sanitize_branch_name("fix-bug", "my-app"), "my-app/fix-bug");
+    }
+
+    #[test]
+    fn test_sanitize_branch_name_empty_prefix() {
+        assert_eq!(sanitize_branch_name("fix-bug", ""), "fix-bug");
+    }
+
+    #[test]
+    fn test_sanitize_branch_name_empty_name_empty_prefix() {
+        assert_eq!(sanitize_branch_name("", ""), "session");
+    }
+
+    #[test]
+    fn test_sanitize_branch_name_empty_name_custom_prefix() {
+        assert_eq!(sanitize_branch_name("", "team"), "team/session");
+    }
+
+    // --- normalize_prefix ---
+
+    #[test]
+    fn test_normalize_prefix_dots() {
+        assert_eq!(normalize_prefix("my.company.app"), "my-company-app");
+    }
+
+    #[test]
+    fn test_normalize_prefix_underscores() {
+        assert_eq!(normalize_prefix("my_app_name"), "my-app-name");
+    }
+
+    #[test]
+    fn test_normalize_prefix_empty() {
+        assert_eq!(normalize_prefix(""), "");
+    }
+
+    #[test]
+    fn test_normalize_prefix_clean() {
+        assert_eq!(normalize_prefix("my-app"), "my-app");
+    }
+
+    // --- resolve_branch_prefix ---
+
+    #[test]
+    fn test_resolve_prefix_from_repo_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("my-project");
+        std::fs::create_dir(&repo).unwrap();
+        assert_eq!(resolve_branch_prefix(&repo, None), "my-project");
+    }
+
+    #[test]
+    fn test_resolve_prefix_global_overrides_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("my-project");
+        std::fs::create_dir(&repo).unwrap();
+        assert_eq!(resolve_branch_prefix(&repo, Some("team")), "team");
+    }
+
+    #[test]
+    fn test_resolve_prefix_repo_config_overrides_global() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("my-project");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::write(
+            repo.join(".nexus.toml"),
+            "[worktree]\nbranch_prefix = \"custom\"\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_branch_prefix(&repo, Some("global")), "custom");
+    }
+
+    #[test]
+    fn test_resolve_prefix_repo_config_empty_disables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("my-project");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::write(
+            repo.join(".nexus.toml"),
+            "[worktree]\nbranch_prefix = \"\"\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_branch_prefix(&repo, Some("global")), "");
+    }
+
+    #[test]
+    fn test_resolve_prefix_global_empty_disables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("my-project");
+        std::fs::create_dir(&repo).unwrap();
+        assert_eq!(resolve_branch_prefix(&repo, Some("")), "");
+    }
+
+    #[test]
+    fn test_resolve_prefix_dir_with_dots_normalized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("my.company.app");
+        std::fs::create_dir(&repo).unwrap();
+        assert_eq!(resolve_branch_prefix(&repo, None), "my-company-app");
     }
 
     #[test]

@@ -16,6 +16,8 @@ pub struct NexusConfig {
     pub groups: Vec<GroupDef>,
     #[serde(default)]
     pub tmux: TmuxConfig,
+    #[serde(default)]
+    pub worktree: WorktreeConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +53,12 @@ impl Default for TmuxConfig {
             socket_name: default_socket_name(),
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct WorktreeConfig {
+    #[serde(default)]
+    pub branch_prefix: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +200,32 @@ icon = "x"
         let cfg = parse_and_validate(toml_str).unwrap();
         assert!(cfg.general.db_path.ends_with("nexus/nexus.db"));
         assert_eq!(cfg.tmux.socket_name, "nexus");
+    }
+
+    #[test]
+    fn test_worktree_prefix_configured() {
+        let toml_str = r#"
+[worktree]
+branch_prefix = "team"
+"#;
+        let cfg = parse_and_validate(toml_str).unwrap();
+        assert_eq!(cfg.worktree.branch_prefix, Some("team".to_string()));
+    }
+
+    #[test]
+    fn test_worktree_prefix_empty_string() {
+        let toml_str = r#"
+[worktree]
+branch_prefix = ""
+"#;
+        let cfg = parse_and_validate(toml_str).unwrap();
+        assert_eq!(cfg.worktree.branch_prefix, Some(String::new()));
+    }
+
+    #[test]
+    fn test_worktree_prefix_absent() {
+        let cfg = parse_and_validate("").unwrap();
+        assert_eq!(cfg.worktree.branch_prefix, None);
     }
 
     #[test]

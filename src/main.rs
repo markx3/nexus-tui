@@ -10,6 +10,7 @@ pub(crate) mod git;
 #[cfg(test)]
 mod mock;
 mod path_complete;
+mod repo_config;
 mod theme;
 mod time_utils;
 pub(crate) mod tmux;
@@ -84,7 +85,11 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 let repo = git::detect_repo(&cwd).ok_or_else(|| {
                     color_eyre::eyre::eyre!("'{}' is not inside a git repository", cwd)
                 })?;
-                let branch = git::sanitize_branch_name(&name);
+                let prefix = git::resolve_branch_prefix(
+                    &repo.root,
+                    config.worktree.branch_prefix.as_deref(),
+                );
+                let branch = git::sanitize_branch_name(&name, &prefix);
                 if git::branch_exists(&repo.root, &branch) {
                     color_eyre::eyre::bail!("Branch '{}' already exists", branch);
                 }

@@ -1456,7 +1456,9 @@ impl App {
             return;
         }
 
-        let branch = git::sanitize_branch_name(name);
+        let prefix =
+            git::resolve_branch_prefix(&repo_root, self.config.worktree.branch_prefix.as_deref());
+        let branch = git::sanitize_branch_name(name, &prefix);
         if git::branch_exists(&repo_root, &branch) {
             self.status_message = Some((
                 format!("Branch '{}' already exists", branch),
