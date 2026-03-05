@@ -254,6 +254,7 @@ pub enum ThemeElement {
     ConversationAssistant,
     LogoAgent,
     LogoNexus,
+    WorktreeBranch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

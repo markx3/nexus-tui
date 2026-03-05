@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -75,7 +75,6 @@ pub fn render_tree(
     state.ensure_cursor_visible(viewport_h);
 
     let start = state.scroll_offset;
-    let end = (start + viewport_h).min(flat.len());
 
     const INDENTS: [&str; 8] = [
         "",
@@ -100,17 +99,22 @@ pub fn render_tree(
     }
 
     let content_start = if start > 0 { 1 } else { 0 };
-    let content_end_budget = if end < flat.len() { 1 } else { 0 };
-    let content_slots = viewport_h.saturating_sub(content_start + content_end_budget);
 
-    let actual_end = (start + content_start + content_slots).min(flat.len());
+    let mut flat_idx_last: Option<usize> = None;
 
-    for (flat_idx, node) in flat
-        .iter()
-        .enumerate()
-        .take(actual_end)
-        .skip(start + content_start)
-    {
+    for (flat_idx, node) in flat.iter().enumerate().skip(start + content_start) {
+        // Reserve 1 line for scroll-down indicator if there are more nodes after this one
+        let has_more_after = flat_idx + 1 < flat.len();
+        let budget = if has_more_after {
+            viewport_h.saturating_sub(1)
+        } else {
+            viewport_h
+        };
+        if lines.len() >= budget {
+            break;
+        }
+
+        flat_idx_last = Some(flat_idx);
         let indent = INDENTS
             .get(node.depth as usize)
             .unwrap_or(&INDENTS[INDENTS.len() - 1]);
@@ -200,14 +204,6 @@ pub fn render_tree(
                     Span::styled(format!("  {}", rel_time), Style::new().fg(theme::dim())),
                 ];
 
-                // Show worktree branch badge
-                if let Some(ref wt) = summary.worktree {
-                    spans.push(Span::styled(
-                        format!(" [{}]", wt.branch),
-                        Style::new().fg(theme::accent()),
-                    ));
-                }
-
                 // Show status tag for non-active
                 if summary.status == SessionStatus::Dead {
                     spans.push(Span::styled(
@@ -220,19 +216,14 @@ pub fn render_tree(
             }
         };
 
-        // Apply selection highlight
+        // Apply selection highlight with full-width background
         let line = if is_selected {
-            let bg = if focused {
+            let sel_bg = if focused {
                 theme::derive_selection_bg()
             } else {
                 theme::derive_unfocused_selection_bg()
             };
-            Line::from(
-                line.spans
-                    .into_iter()
-                    .map(|s| s.patch_style(Style::new().bg(bg)))
-                    .collect::<Vec<_>>(),
-            )
+            pad_line_with_bg(line, inner.width, sel_bg)
         } else {
             line
         };
@@ -252,10 +243,41 @@ pub fn render_tree(
         }
 
         lines.push(line);
+
+        // Worktree branch sub-line (decorative, not independently selectable)
+        if let FlatNodeKind::Session { ref summary } = node.node {
+            if let Some(ref wt) = summary.worktree {
+                if lines.len() < viewport_h {
+                    let mut wt_line = Line::from(vec![
+                        Span::raw(*indent),
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("\u{e725} {}", wt.branch),
+                            theme::style_for(ThemeElement::WorktreeBranch),
+                        ),
+                    ]);
+                    if is_selected {
+                        let sel_bg = if focused {
+                            theme::derive_selection_bg()
+                        } else {
+                            theme::derive_unfocused_selection_bg()
+                        };
+                        wt_line = pad_line_with_bg(wt_line, inner.width, sel_bg);
+                    }
+                    lines.push(wt_line);
+                }
+            }
+        }
+
+        // Stop if viewport is full
+        if lines.len() >= viewport_h {
+            break;
+        }
     }
 
-    // Scroll-down indicator
-    if end < flat.len() {
+    // Scroll-down indicator (show if we broke out early or there are more nodes)
+    let rendered_all = flat_idx_last.is_none_or(|last| last + 1 >= flat.len());
+    if !rendered_all {
         lines.push(Line::from(Span::styled(
             "  \u{25BC} more below",
             Style::new().fg(theme::dim()),
@@ -266,6 +288,27 @@ pub fn render_tree(
     frame.render_widget(paragraph, inner);
 
     attention_rects
+}
+
+// ---------------------------------------------------------------------------
+// Selection helpers
+// ---------------------------------------------------------------------------
+
+/// Apply a background color to every span in a line and pad it to `width`
+/// so the highlight extends edge-to-edge.
+fn pad_line_with_bg(line: Line<'_>, width: u16, bg: Color) -> Line<'_> {
+    let content_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
+    let pad = (width as usize).saturating_sub(content_width);
+    let bg_style = Style::new().bg(bg);
+    let mut spans: Vec<Span> = line
+        .spans
+        .into_iter()
+        .map(|s| s.patch_style(bg_style))
+        .collect();
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), bg_style));
+    }
+    Line::from(spans)
 }
 
 // ---------------------------------------------------------------------------

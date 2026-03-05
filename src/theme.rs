@@ -252,6 +252,7 @@ pub fn style_for(element: ThemeElement) -> Style {
         ThemeElement::ConversationAssistant => Style::new().fg(secondary()),
         ThemeElement::LogoAgent => Style::new().fg(dim()),
         ThemeElement::LogoNexus => Style::new().fg(primary()),
+        ThemeElement::WorktreeBranch => Style::new().fg(dim()).add_modifier(Modifier::ITALIC),
     }
 }
 
@@ -334,6 +335,7 @@ mod tests {
             ThemeElement::ConversationAssistant,
             ThemeElement::LogoAgent,
             ThemeElement::LogoNexus,
+            ThemeElement::WorktreeBranch,
         ];
 
         let default_style = Style::default();
