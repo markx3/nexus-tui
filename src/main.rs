@@ -411,7 +411,10 @@ fn print_session_detail(s: &types::SessionSummary) {
 fn run_update() -> Result<()> {
     let source_dir = env!("CARGO_MANIFEST_DIR");
 
-    if std::path::Path::new(source_dir).join(".git").exists() {
+    let is_dev_install = std::path::Path::new(source_dir).join(".git").exists()
+        && !source_dir.contains(".cargo/git/checkouts/");
+
+    if is_dev_install {
         run_update_dev(source_dir)?;
     } else {
         run_update_git()?;
