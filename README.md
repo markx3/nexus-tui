@@ -16,11 +16,11 @@ Nexus gives you a persistent, organized workspace for managing multiple Claude C
 - **8 color themes** — cycle with `Alt+t`, persisted across restarts
 - **Session lifecycle** — create, rename, move, delete, and kill sessions from the TUI or CLI
 - **Worktree isolation** — optionally create a dedicated git worktree per session for branch-level isolation
-- **Claude session resume** — automatically detects Claude session IDs for `--resume` support
+- **Claude session resume** — automatically detects Claude Code session IDs so relaunched sessions resume where they left off
 - **CLI + JSON output** — scriptable interface for all operations (`nexus list --json`)
 - **Lazygit integration** — open lazygit in any session's working directory with `Alt+l`
 - **Text selection** — click+drag in the session panel to select and copy text (via OSC 52)
-- **Feedback detection** — automatically detects when Claude is waiting for permission or confirmation across all sessions, pulsing the session tree row with a glow effect
+- **Feedback detection** — automatically detects when Claude is waiting for permission or confirmation across all sessions, pulsing the session tree row with a glow effect (no setup required)
 
 ## Install
 
@@ -83,26 +83,26 @@ The TUI shows a session tree on the left and a live terminal preview on the righ
 
 ### CLI Mode
 
-All subcommands support `--json` for machine-readable output.
+Most subcommands support `--json` for machine-readable output.
 
 ```sh
-nexus list              # List active sessions
-nexus list --all        # Include dead/past sessions
-nexus show <id>         # Show session details (ID prefix supported)
-nexus new <name>        # Create and launch a new session
-nexus new <name> -c /path -g mygroup  # With cwd and group
-nexus new <name> -w     # Create with an isolated git worktree
-nexus launch <id>       # Launch/resume a session in tmux
-nexus kill <name>       # Kill a running tmux session
-nexus groups            # List configured groups
-nexus send <name> <text>    # Send text to a tmux session
-nexus capture <name>        # Capture pane contents
-nexus capture <name> --strip  # Capture without ANSI codes
-nexus delete <id>       # Delete a session from the database
+nexus list                           # List active sessions
+nexus list --all                     # Include dead/past sessions
+nexus show <id>                      # Show session details (ID prefix supported)
+nexus new <name>                     # Create and launch a new session
+nexus new <name> -c /path -g mygroup # With cwd and group
+nexus new <name> -w                  # Create with an isolated git worktree
+nexus launch <id>                    # Launch/resume a session in tmux
+nexus kill <name>                    # Kill a running tmux session
+nexus groups                         # List configured groups
+nexus send <name> <text>             # Send text to a tmux session
+nexus capture <name>                 # Capture pane contents
+nexus capture <name> --strip         # Capture without ANSI codes
+nexus delete <id>                    # Delete a session from the database
 nexus delete <id> --remove-worktree  # Also clean up the git worktree
-nexus rename <id> <name>    # Rename a session
-nexus move <id> --group <name>  # Move session to a group
-nexus group-create <name>   # Create a new group
+nexus rename <id> <name>             # Rename a session
+nexus move <id> --group <name>       # Move session to a group
+nexus group-create <name>            # Create a new group
 ```
 
 ## Configuration
@@ -155,11 +155,13 @@ Worktree sessions show a branch badge (e.g., `[my-app/fix-bug]`) in the session 
 # ~/.config/nexus/config.toml (global)
 [worktree]
 branch_prefix = "team"    # all repos: team/fix-bug
+```
 
+```toml
 # .nexus.toml (per-repo, overrides global)
 [worktree]
 branch_prefix = "custom"  # this repo: custom/fix-bug
-branch_prefix = ""        # disable prefix: fix-bug
+# branch_prefix = ""      # or disable prefix entirely: fix-bug
 ```
 
 **Convention hooks:** If `.nexus/on-worktree-create` exists in the repo root and is executable, Nexus delegates worktree creation to it instead of running `git worktree add`. Similarly for `.nexus/on-worktree-teardown`. Hooks receive environment variables: `NEXUS_WORKTREE_PATH`, `NEXUS_BRANCH`, `NEXUS_SESSION_NAME`, `NEXUS_REPO_ROOT`.
@@ -214,7 +216,7 @@ config.send_composed_key_when_right_alt_is_pressed = false
 ## Platform Support
 
 - **macOS** — primary development platform, fully supported
-- **Linux** — should work (tmux + standard terminal required)
+- **Linux** — supported (tmux + standard terminal required)
 - **Windows** — not supported (tmux dependency)
 
 ## Notes
