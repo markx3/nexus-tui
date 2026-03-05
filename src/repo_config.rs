@@ -12,6 +12,10 @@ pub struct RepoConfig {
 pub struct RepoWorktreeConfig {
     #[serde(default)]
     pub branch_prefix: Option<String>,
+    #[serde(default)]
+    pub on_create: Option<String>,
+    #[serde(default)]
+    pub on_teardown: Option<String>,
 }
 
 /// Load per-repo config from `.nexus.toml` at the repo root.
@@ -60,6 +64,31 @@ mod tests {
         .unwrap();
         let cfg = load_repo_config(tmp.path());
         assert_eq!(cfg.worktree.branch_prefix, Some(String::new()));
+    }
+
+    #[test]
+    fn test_load_with_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".nexus.toml"),
+            "[worktree]\non_create = \"hooks/create.sh\"\non_teardown = \"hooks/teardown.sh\"\n",
+        )
+        .unwrap();
+        let cfg = load_repo_config(tmp.path());
+        assert_eq!(cfg.worktree.on_create, Some("hooks/create.sh".to_string()));
+        assert_eq!(
+            cfg.worktree.on_teardown,
+            Some("hooks/teardown.sh".to_string())
+        );
+    }
+
+    #[test]
+    fn test_load_hooks_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".nexus.toml"), "[worktree]\n").unwrap();
+        let cfg = load_repo_config(tmp.path());
+        assert!(cfg.worktree.on_create.is_none());
+        assert!(cfg.worktree.on_teardown.is_none());
     }
 
     #[test]

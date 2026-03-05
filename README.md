@@ -164,7 +164,58 @@ branch_prefix = "custom"  # this repo: custom/fix-bug
 # branch_prefix = ""      # or disable prefix entirely: fix-bug
 ```
 
-**Convention hooks:** If `.nexus/on-worktree-create` exists in the repo root and is executable, Nexus delegates worktree creation to it instead of running `git worktree add`. Similarly for `.nexus/on-worktree-teardown`. Hooks receive environment variables: `NEXUS_WORKTREE_PATH`, `NEXUS_BRANCH`, `NEXUS_SESSION_NAME`, `NEXUS_REPO_ROOT`.
+### Worktree Hooks
+
+Nexus can run custom scripts when creating or tearing down worktrees. If a hook is configured, Nexus delegates the entire operation to it instead of running `git worktree add`/`remove`.
+
+**Resolution priority** (first match wins):
+
+1. Per-repo `.nexus.toml` — paths resolved relative to the repo root
+2. Global `~/.config/nexus/config.toml` — absolute paths or `~/`-prefixed
+3. Convention: `{repo_root}/.nexus/on-worktree-create` and `.nexus/on-worktree-teardown`
+
+If a configured path is invalid (missing, not executable, symlink), Nexus does **not** fall through to the next level — the hook is skipped entirely. This prevents accidentally running a convention hook when you intended a specific one.
+
+```toml
+# ~/.config/nexus/config.toml (global)
+[worktree]
+on_create = "~/scripts/wt-create.sh"
+on_teardown = "~/scripts/wt-teardown.sh"
+```
+
+```toml
+# .nexus.toml (per-repo, overrides global)
+[worktree]
+on_create = "scripts/wt-create.sh"      # relative to repo root
+on_teardown = "scripts/wt-teardown.sh"
+```
+
+**Environment variables** passed to hooks:
+
+| Variable | Description |
+|---|---|
+| `NEXUS_WORKTREE_PATH` | Target worktree directory |
+| `NEXUS_BRANCH` | Git branch name |
+| `NEXUS_SESSION_NAME` | Nexus session name (empty on teardown) |
+| `NEXUS_REPO_ROOT` | Repository root path |
+
+**Constraints:**
+
+- Hooks must be regular files (symlinks and directories are rejected)
+- Hooks must have the executable bit set
+- Per-repo hook paths must not contain `..` (path traversal outside the repo root is rejected)
+- Hooks time out after 60 seconds (process group is killed)
+- The environment is scrubbed — only `PATH`, `HOME`, `SHELL`, `USER`, `LANG`, `TERM` plus the `NEXUS_*` variables above are available
+- Create hooks **must** create the directory at `$NEXUS_WORKTREE_PATH` or Nexus will report an error
+
+**Example hook:**
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+git -C "$NEXUS_REPO_ROOT" worktree add "$NEXUS_WORKTREE_PATH" -b "$NEXUS_BRANCH"
+cp "$NEXUS_REPO_ROOT/.env.example" "$NEXUS_WORKTREE_PATH/.env" 2>/dev/null || true
+```
 
 ## Terminal Setup (macOS)
 

@@ -181,14 +181,114 @@ fn sanitize_ref_component(input: &str) -> String {
     result
 }
 
-/// Create a worktree. Checks for `.nexus/on-worktree-create` convention hook.
-/// If hook exists: delegates fully, hook must create worktree at $NEXUS_WORKTREE_PATH.
-/// If no hook: runs `git worktree add <path> -b <branch>`.
+/// Resolve a hook path using the config priority chain:
+/// 1. Per-repo `.nexus.toml` path (resolved relative to repo root)
+/// 2. Global `config.toml` path (tilde-expanded)
+/// 3. Convention: `{repo_root}/.nexus/{hook_name}`
+///
+/// `hook_name` must be `"on-worktree-create"` or `"on-worktree-teardown"`.
+/// Validates: file exists, is a regular file (not symlink), has executable bit.
+pub fn resolve_hook_path(
+    repo_root: &Path,
+    hook_name: &str,
+    global_config_path: Option<&str>,
+) -> Option<PathBuf> {
+    // 1. Per-repo config path (relative to repo root)
+    let repo_cfg = repo_config::load_repo_config(repo_root);
+    let repo_config_path = match hook_name {
+        "on-worktree-create" => repo_cfg.worktree.on_create.as_deref(),
+        "on-worktree-teardown" => repo_cfg.worktree.on_teardown.as_deref(),
+        _ => None,
+    };
+    if let Some(rel) = repo_config_path {
+        // Reject paths with .. components that could escape repo root
+        if Path::new(rel)
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            return None;
+        }
+        let candidate = repo_root.join(rel);
+        if validate_hook_file(&candidate) {
+            return Some(candidate);
+        }
+        return None; // Explicitly configured but invalid — don't fall through
+    }
+
+    // 2. Global config path (expand ~)
+    if let Some(path_str) = global_config_path {
+        let expanded = expand_tilde(path_str);
+        if validate_hook_file(&expanded) {
+            return Some(expanded);
+        }
+        return None; // Explicitly configured but invalid — don't fall through
+    }
+
+    // 3. Convention fallback
+    resolve_hook(repo_root, hook_name)
+}
+
+/// Expand leading `~` to the user's home directory.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Validate a hook file: exists, not a symlink, executable.
+fn validate_hook_file(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+
+    // Reject symlinks
+    if path
+        .symlink_metadata()
+        .map(|m| m.is_symlink())
+        .unwrap_or(true)
+    {
+        return false;
+    }
+
+    // Check regular file + executable bit (Unix), regular file only (non-Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = path.metadata() {
+            if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if let Ok(meta) = path.metadata() {
+            if !meta.is_file() {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Create a worktree.
+/// If `create_hook` is provided, delegates to that hook script.
+/// Otherwise runs `git worktree add <path> -b <branch>`.
 pub fn create_worktree(
     repo_root: &Path,
     session_name: &str,
     worktree_path: &Path,
     branch: &str,
+    create_hook: Option<&Path>,
 ) -> Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = worktree_path.parent() {
@@ -198,8 +298,8 @@ pub fn create_worktree(
 
     let env_vars = hook_env_vars(repo_root, worktree_path, branch, session_name);
 
-    if let Some(hook) = resolve_hook(repo_root, "on-worktree-create") {
-        execute_hook(&hook, &env_vars)?;
+    if let Some(hook) = create_hook {
+        execute_hook(hook, &env_vars)?;
 
         // Verify the hook actually created the worktree directory
         if !worktree_path.exists() {
@@ -234,17 +334,23 @@ pub fn create_worktree(
     Ok(())
 }
 
-/// Remove a worktree. Checks for `.nexus/on-worktree-teardown` convention hook.
+/// Remove a worktree.
+/// If `teardown_hook` is provided, delegates to that hook script.
 /// If worktree path doesn't exist on disk: skips cleanup, returns Ok.
-pub fn remove_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+pub fn remove_worktree(
+    repo_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+    teardown_hook: Option<&Path>,
+) -> Result<()> {
     if !worktree_path.exists() {
         return Ok(());
     }
 
     let env_vars = hook_env_vars(repo_root, worktree_path, branch, "");
 
-    if let Some(hook) = resolve_hook(repo_root, "on-worktree-teardown") {
-        execute_hook(&hook, &env_vars)?;
+    if let Some(hook) = teardown_hook {
+        execute_hook(hook, &env_vars)?;
     } else {
         // Force remove in case there are uncommitted changes
         let output = Command::new("git")
@@ -290,34 +396,11 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) -> 
 /// trust model as git's own hook system.
 fn resolve_hook(repo_root: &Path, hook_name: &str) -> Option<PathBuf> {
     let hook_path = repo_root.join(".nexus").join(hook_name);
-
-    if !hook_path.exists() {
-        return None;
+    if validate_hook_file(&hook_path) {
+        Some(hook_path)
+    } else {
+        None
     }
-
-    // Reject symlinks
-    if hook_path
-        .symlink_metadata()
-        .map(|m| m.is_symlink())
-        .unwrap_or(true)
-    {
-        return None;
-    }
-
-    // Check executable bit (Unix only)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = hook_path.metadata() {
-            if meta.permissions().mode() & 0o111 == 0 {
-                return None;
-            }
-        } else {
-            return None;
-        }
-    }
-
-    Some(hook_path)
 }
 
 /// Execute a hook script DIRECTLY as an executable (not via $SHELL -c).
@@ -702,12 +785,12 @@ mod tests {
         let branch = "nexus/test-session";
 
         // Create
-        create_worktree(&repo, "test-session", &wt_path, branch).unwrap();
+        create_worktree(&repo, "test-session", &wt_path, branch, None).unwrap();
         assert!(wt_path.exists());
         assert!(branch_exists(&repo, branch));
 
         // Remove
-        remove_worktree(&repo, &wt_path, branch).unwrap();
+        remove_worktree(&repo, &wt_path, branch, None).unwrap();
         assert!(!wt_path.exists());
     }
 
@@ -716,7 +799,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let non_existent = tmp.path().join("does-not-exist");
         // Should return Ok when path doesn't exist
-        remove_worktree(tmp.path(), &non_existent, "nexus/whatever").unwrap();
+        remove_worktree(tmp.path(), &non_existent, "nexus/whatever", None).unwrap();
     }
 
     #[test]
@@ -770,5 +853,171 @@ mod tests {
         std::os::unix::fs::symlink(&real_hook, &hook_link).unwrap();
 
         assert!(resolve_hook(tmp.path(), "on-worktree-create").is_none());
+    }
+
+    // --- resolve_hook_path priority chain ---
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_resolve_hook_path_repo_config_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Convention hook
+        let nexus_dir = repo.join(".nexus");
+        std::fs::create_dir(&nexus_dir).unwrap();
+        let convention = nexus_dir.join("on-worktree-create");
+        std::fs::write(&convention, "#!/bin/bash\necho convention").unwrap();
+        make_executable(&convention);
+
+        // Repo-config hook
+        let scripts = repo.join("scripts");
+        std::fs::create_dir(&scripts).unwrap();
+        let repo_hook = scripts.join("create.sh");
+        std::fs::write(&repo_hook, "#!/bin/bash\necho repo").unwrap();
+        make_executable(&repo_hook);
+
+        // Write .nexus.toml pointing to repo hook
+        std::fs::write(
+            repo.join(".nexus.toml"),
+            "[worktree]\non_create = \"scripts/create.sh\"\n",
+        )
+        .unwrap();
+
+        let result = resolve_hook_path(repo, "on-worktree-create", Some("/global/hook.sh"));
+        assert_eq!(result, Some(repo.join("scripts/create.sh")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_resolve_hook_path_global_config_over_convention() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Convention hook
+        let nexus_dir = repo.join(".nexus");
+        std::fs::create_dir(&nexus_dir).unwrap();
+        let convention = nexus_dir.join("on-worktree-create");
+        std::fs::write(&convention, "#!/bin/bash\necho convention").unwrap();
+        make_executable(&convention);
+
+        // Global config hook (use an absolute path in tmp)
+        let global_hook = tmp.path().join("global-hook.sh");
+        std::fs::write(&global_hook, "#!/bin/bash\necho global").unwrap();
+        make_executable(&global_hook);
+
+        let result = resolve_hook_path(
+            repo,
+            "on-worktree-create",
+            Some(global_hook.to_str().unwrap()),
+        );
+        assert_eq!(result, Some(global_hook));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_resolve_hook_path_convention_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        let nexus_dir = repo.join(".nexus");
+        std::fs::create_dir(&nexus_dir).unwrap();
+        let convention = nexus_dir.join("on-worktree-create");
+        std::fs::write(&convention, "#!/bin/bash\necho convention").unwrap();
+        make_executable(&convention);
+
+        let result = resolve_hook_path(repo, "on-worktree-create", None);
+        assert_eq!(result, Some(convention));
+    }
+
+    #[test]
+    fn test_resolve_hook_path_no_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_hook_path(tmp.path(), "on-worktree-create", None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_hook_path_repo_config_invalid_no_fallthrough() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Convention hook exists
+        let nexus_dir = repo.join(".nexus");
+        std::fs::create_dir(&nexus_dir).unwrap();
+        let convention = nexus_dir.join("on-worktree-create");
+        std::fs::write(&convention, "#!/bin/bash\necho convention").unwrap();
+        #[cfg(unix)]
+        make_executable(&convention);
+
+        // Repo config points to non-existent file — should NOT fall through to convention
+        std::fs::write(
+            repo.join(".nexus.toml"),
+            "[worktree]\non_create = \"nonexistent.sh\"\n",
+        )
+        .unwrap();
+        let result = resolve_hook_path(repo, "on-worktree-create", None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_hook_path_global_config_invalid_no_fallthrough() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Convention hook exists
+        let nexus_dir = repo.join(".nexus");
+        std::fs::create_dir(&nexus_dir).unwrap();
+        let convention = nexus_dir.join("on-worktree-create");
+        std::fs::write(&convention, "#!/bin/bash\necho convention").unwrap();
+        #[cfg(unix)]
+        make_executable(&convention);
+
+        // Global config points to non-existent file — should NOT fall through
+        let result = resolve_hook_path(repo, "on-worktree-create", Some("/nonexistent/hook.sh"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_hook_path_repo_config_path_traversal_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Write .nexus.toml with path traversal attempt
+        std::fs::write(
+            repo.join(".nexus.toml"),
+            "[worktree]\non_create = \"../../../etc/evil.sh\"\n",
+        )
+        .unwrap();
+
+        let result = resolve_hook_path(repo, "on-worktree-create", None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_validate_hook_file_rejects_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("not-a-file");
+        std::fs::create_dir(&dir).unwrap();
+        // Directories should not pass validation
+        assert!(!validate_hook_file(&dir));
+    }
+
+    #[test]
+    fn test_expand_tilde() {
+        let expanded = expand_tilde("~/scripts/hook.sh");
+        assert!(!expanded.to_string_lossy().starts_with('~'));
+        assert!(expanded.to_string_lossy().ends_with("scripts/hook.sh"));
+
+        // Absolute path unchanged
+        let abs = expand_tilde("/usr/bin/hook.sh");
+        assert_eq!(abs, PathBuf::from("/usr/bin/hook.sh"));
     }
 }

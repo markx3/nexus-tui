@@ -1100,11 +1100,21 @@ impl App {
                         self.dirty = true;
                         let repo_root = wt.repo_root.clone();
                         let branch = wt.branch.clone();
+                        let teardown_hook = git::resolve_hook_path(
+                            &repo_root,
+                            "on-worktree-teardown",
+                            self.config.worktree.on_teardown.as_deref(),
+                        );
                         let (tx, rx) = mpsc::channel();
                         std::thread::Builder::new()
                             .name("nexus-wt-teardown".to_string())
                             .spawn(move || {
-                                let result = git::remove_worktree(&repo_root, &wt_path, &branch);
+                                let result = git::remove_worktree(
+                                    &repo_root,
+                                    &wt_path,
+                                    &branch,
+                                    teardown_hook.as_deref(),
+                                );
                                 let _ = tx.send(result);
                             })
                             .expect("thread spawn");
@@ -1473,6 +1483,13 @@ impl App {
         self.status_message = Some(("Creating worktree...".to_string(), Instant::now()));
         self.dirty = true;
 
+        // Resolve create hook via config priority chain
+        let create_hook = git::resolve_hook_path(
+            &repo_root,
+            "on-worktree-create",
+            self.config.worktree.on_create.as_deref(),
+        );
+
         // Spawn named background thread for worktree creation
         let root_clone = repo_root.clone();
         let session_name = name.to_string();
@@ -1482,8 +1499,13 @@ impl App {
         std::thread::Builder::new()
             .name("nexus-wt-create".to_string())
             .spawn(move || {
-                let result =
-                    git::create_worktree(&root_clone, &session_name, &wt_path, &branch_clone);
+                let result = git::create_worktree(
+                    &root_clone,
+                    &session_name,
+                    &wt_path,
+                    &branch_clone,
+                    create_hook.as_deref(),
+                );
                 let _ = tx.send(result);
             })
             .expect("thread spawn");

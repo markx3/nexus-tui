@@ -95,7 +95,12 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 }
                 let sanitized_dir = branch.replace('/', "-");
                 let wt_path = repo.root.join(".worktrees").join(&sanitized_dir);
-                git::create_worktree(&repo.root, &name, &wt_path, &branch)?;
+                let create_hook = git::resolve_hook_path(
+                    &repo.root,
+                    "on-worktree-create",
+                    config.worktree.on_create.as_deref(),
+                );
+                git::create_worktree(&repo.root, &name, &wt_path, &branch, create_hook.as_deref())?;
                 Some((
                     wt_path.to_string_lossy().to_string(),
                     types::WorktreeInfo {
@@ -224,7 +229,17 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                     if remove_worktree {
                         let wt_path = s.cwd.as_deref();
                         if let Some(wt_path) = wt_path {
-                            git::remove_worktree(&wt.repo_root, wt_path, &wt.branch)?;
+                            let teardown_hook = git::resolve_hook_path(
+                                &wt.repo_root,
+                                "on-worktree-teardown",
+                                config.worktree.on_teardown.as_deref(),
+                            );
+                            git::remove_worktree(
+                                &wt.repo_root,
+                                wt_path,
+                                &wt.branch,
+                                teardown_hook.as_deref(),
+                            )?;
                         }
                     } else {
                         eprintln!(

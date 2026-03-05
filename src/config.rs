@@ -59,6 +59,10 @@ impl Default for TmuxConfig {
 pub struct WorktreeConfig {
     #[serde(default)]
     pub branch_prefix: Option<String>,
+    #[serde(default)]
+    pub on_create: Option<String>,
+    #[serde(default)]
+    pub on_teardown: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +230,31 @@ branch_prefix = ""
     fn test_worktree_prefix_absent() {
         let cfg = parse_and_validate("").unwrap();
         assert_eq!(cfg.worktree.branch_prefix, None);
+    }
+
+    #[test]
+    fn test_worktree_hooks_configured() {
+        let toml_str = r#"
+[worktree]
+on_create = "scripts/wt-create.sh"
+on_teardown = "scripts/wt-teardown.sh"
+"#;
+        let cfg = parse_and_validate(toml_str).unwrap();
+        assert_eq!(
+            cfg.worktree.on_create,
+            Some("scripts/wt-create.sh".to_string())
+        );
+        assert_eq!(
+            cfg.worktree.on_teardown,
+            Some("scripts/wt-teardown.sh".to_string())
+        );
+    }
+
+    #[test]
+    fn test_worktree_hooks_absent() {
+        let cfg = parse_and_validate("").unwrap();
+        assert!(cfg.worktree.on_create.is_none());
+        assert!(cfg.worktree.on_teardown.is_none());
     }
 
     #[test]
