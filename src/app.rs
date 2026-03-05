@@ -673,11 +673,34 @@ impl App {
             return;
         }
 
-        let flat_idx = start + content_start + (rel_row - content_start);
-        let actual_end = (start + content_start + content_slots).min(flat.len());
-        if flat_idx >= actual_end {
-            return;
+        // Walk flat nodes counting display lines to find which node was clicked.
+        // Sessions with worktrees render as 2 display lines but remain 1 flat node.
+        let click_row = rel_row - content_start;
+        let mut display_row = 0usize;
+        let mut clicked_flat_idx = None;
+
+        for (i, fnode) in flat.iter().enumerate().skip(start) {
+            if display_row >= content_slots {
+                break;
+            }
+
+            let node_height = match &fnode.node {
+                FlatNodeKind::Session { summary } if summary.worktree.is_some() => {
+                    if display_row + 1 < content_slots { 2 } else { 1 }
+                }
+                _ => 1,
+            };
+
+            if click_row >= display_row && click_row < display_row + node_height {
+                clicked_flat_idx = Some(i);
+                break;
+            }
+            display_row += node_height;
         }
+
+        let Some(flat_idx) = clicked_flat_idx else {
+            return;
+        };
 
         // Move cursor and dispatch via existing handle_tree_action flow
         self.tree_state.cursor_index = flat_idx;
