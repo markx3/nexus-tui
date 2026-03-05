@@ -468,18 +468,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_branch_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path();
+    fn init_test_repo(path: &Path) {
         Command::new("git")
             .args(["init", path.to_str().unwrap()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .unwrap();
-
-        // Create initial commit so branches work
+        // Configure user for CI environments where no global git config exists
+        for args in [
+            vec!["-C", path.to_str().unwrap(), "config", "user.name", "test"],
+            vec![
+                "-C",
+                path.to_str().unwrap(),
+                "config",
+                "user.email",
+                "test@test.com",
+            ],
+        ] {
+            Command::new("git")
+                .args(&args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+        }
         Command::new("git")
             .args([
                 "-C",
@@ -493,6 +506,13 @@ mod tests {
             .stderr(Stdio::null())
             .status()
             .unwrap();
+    }
+
+    #[test]
+    fn test_branch_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+        init_test_repo(path);
 
         // Default branch should exist
         let default_branch = Command::new("git")
@@ -514,26 +534,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
-
-        Command::new("git")
-            .args(["init", repo.to_str().unwrap()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args([
-                "-C",
-                repo.to_str().unwrap(),
-                "commit",
-                "--allow-empty",
-                "-m",
-                "init",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
+        init_test_repo(&repo);
 
         let wt_path = repo.join(".worktrees").join("test-session");
         let branch = "nexus/test-session";
