@@ -686,7 +686,11 @@ impl App {
 
             let node_height = match &fnode.node {
                 FlatNodeKind::Session { summary } if summary.worktree.is_some() => {
-                    if display_row + 1 < content_slots { 2 } else { 1 }
+                    if display_row + 1 < content_slots {
+                        2
+                    } else {
+                        1
+                    }
                 }
                 _ => 1,
             };
