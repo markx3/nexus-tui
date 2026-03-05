@@ -103,6 +103,7 @@ nexus delete <id> --remove-worktree  # Also clean up the git worktree
 nexus rename <id> <name>             # Rename a session
 nexus move <id> --group <name>       # Move session to a group
 nexus group-create <name>            # Create a new group
+nexus update                         # Update nexus to the latest version
 ```
 
 ## Configuration
@@ -165,6 +166,12 @@ branch_prefix = "custom"  # this repo: custom/fix-bug
 ```
 
 **Convention hooks:** If `.nexus/on-worktree-create` exists in the repo root and is executable, Nexus delegates worktree creation to it instead of running `git worktree add`. Similarly for `.nexus/on-worktree-teardown`. Hooks receive environment variables: `NEXUS_WORKTREE_PATH`, `NEXUS_BRANCH`, `NEXUS_SESSION_NAME`, `NEXUS_REPO_ROOT`.
+
+### Auto-Update
+
+Nexus checks for updates on startup (at most once per hour) by comparing your local build against the upstream git repo. If a newer version is available, an **UPDATE** badge appears in the top bar. Run `nexus update` to pull the latest code and rebuild.
+
+The update check uses the source directory from your original `cargo install --path .` build. If the source directory no longer exists, the check is silently skipped.
 
 ## Terminal Setup (macOS)
 

@@ -14,6 +14,7 @@ pub fn render_top_bar(
     area: Rect,
     session_count: usize,
     active_count: usize,
+    update_available: bool,
 ) -> Rect {
     let date = current_date_string();
 
@@ -25,7 +26,7 @@ pub fn render_top_bar(
 
     let theme_text = format!("THEME:{}", theme::current_name());
 
-    let status = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" SYS:", theme::style_for(ThemeElement::TopBarLabel)),
         Span::styled("ONLINE", theme::style_for(ThemeElement::Secondary)),
         Span::styled(
@@ -53,7 +54,18 @@ pub fn render_top_bar(
             theme::style_for(ThemeElement::TopBarLabel),
         ),
         Span::styled(&theme_text, theme::style_for(ThemeElement::Accent)),
-    ]);
+    ];
+    if update_available {
+        spans.push(Span::styled(
+            format!(" {} ", theme::SEPARATOR),
+            theme::style_for(ThemeElement::TopBarLabel),
+        ));
+        spans.push(Span::styled(
+            "UPDATE",
+            theme::style_for(ThemeElement::Hazard),
+        ));
+    }
+    let status = Line::from(spans);
 
     // Compute the screen rect of the theme label for mouse hit-testing
     let inner = Block::default().borders(Borders::ALL).inner(area);
@@ -98,7 +110,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let _ = render_top_bar(frame, area, 5, 2);
+                let _ = render_top_bar(frame, area, 5, 2, false);
             })
             .unwrap();
     }
@@ -110,7 +122,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let _ = render_top_bar(frame, area, 0, 0);
+                let _ = render_top_bar(frame, area, 0, 0, false);
             })
             .unwrap();
     }

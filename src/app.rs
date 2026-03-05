@@ -23,6 +23,7 @@ use crate::theme;
 use crate::tmux::{sanitize_tmux_name, TmuxManager};
 use crate::types::*;
 use crate::ui;
+use crate::update_checker;
 use crate::widgets::finder_state::FinderState;
 use crate::widgets::interactor_state::InteractorState;
 use crate::widgets::logo::LogoState;
@@ -118,6 +119,9 @@ pub struct App {
     pub(crate) attention_sessions: HashSet<String>,
     feedback_rx: Option<mpsc::Receiver<HashSet<String>>>,
     pub(crate) attention_effects: HashMap<String, Effect>,
+    // Update checker: is a newer version available upstream?
+    pub(crate) update_available: bool,
+    update_rx: Option<mpsc::Receiver<bool>>,
     // Pending background worktree creation
     pending_wt_create: Option<PendingWorktreeCreate>,
     // Pending background worktree teardown
@@ -187,6 +191,15 @@ impl App {
             (None, None)
         };
 
+        // Spawn background update checker
+        let update_rx = Some(update_checker::spawn(&config.general.db_path));
+        let update_available = db
+            .get_setting("update_available")
+            .ok()
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+
         Self {
             should_quit: false,
             boot_done: false,
@@ -233,6 +246,8 @@ impl App {
             attention_effects: HashMap::new(),
             pending_wt_create: None,
             pending_wt_teardown: None,
+            update_available,
+            update_rx,
         }
     }
 
@@ -277,6 +292,14 @@ impl App {
                 if set != self.attention_sessions {
                     self.attention_sessions = set;
                     self.rebuild_attention_effects();
+                    self.dirty = true;
+                }
+            }
+
+            // Poll update checker
+            if let Some(ref rx) = self.update_rx {
+                if let Ok(available) = rx.try_recv() {
+                    self.update_available = available;
                     self.dirty = true;
                 }
             }

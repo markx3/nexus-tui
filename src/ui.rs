@@ -64,8 +64,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 
     // Render each zone
     let (session_count, active_count) = app.session_counts();
-    app.area_theme_label =
-        widgets::top_bar::render_top_bar(frame, top_bar, session_count, active_count);
+    app.area_theme_label = widgets::top_bar::render_top_bar(
+        frame,
+        top_bar,
+        session_count,
+        active_count,
+        app.update_available,
+    );
 
     // Don't show attention pulse for the session currently viewed in the interactor
     let mut visible_attention = app.attention_sessions.clone();

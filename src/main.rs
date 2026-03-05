@@ -16,9 +16,11 @@ mod time_utils;
 pub(crate) mod tmux;
 pub(crate) mod types;
 mod ui;
+mod update_checker;
 pub(crate) mod widgets;
 
 use clap::Parser;
+use color_eyre::eyre::WrapErr;
 use color_eyre::Result;
 use tmux::sanitize_tmux_name;
 
@@ -292,6 +294,9 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 println!("Created group '{}' (id: {})", name, gid);
             }
         }
+        cli::Commands::Update => {
+            run_update()?;
+        }
     }
     Ok(())
 }
@@ -401,6 +406,51 @@ fn print_session_detail(s: &types::SessionSummary) {
     println!("Active:  {}", s.is_active);
     println!("Last:    {}", s.last_active);
     println!("Created: {}", s.created_at);
+}
+
+fn run_update() -> Result<()> {
+    use std::process::Command;
+
+    let source_dir = env!("CARGO_MANIFEST_DIR");
+
+    if !std::path::Path::new(source_dir).join(".git").exists() {
+        color_eyre::eyre::bail!(
+            "Source directory not found or is not a git repo: {}\n\
+             This can happen if the repo was moved after installation.",
+            source_dir
+        );
+    }
+
+    println!("Updating nexus from {}", source_dir);
+
+    // git pull
+    let pull_status = Command::new("git")
+        .args(["-C", source_dir, "pull"])
+        .status()
+        .wrap_err("failed to run git pull")?;
+
+    if !pull_status.success() {
+        color_eyre::eyre::bail!("git pull failed");
+    }
+
+    // cargo install --path .
+    println!("\nRebuilding...");
+    let install_status = Command::new("cargo")
+        .args(["install", "--path", source_dir])
+        .status()
+        .wrap_err("failed to run cargo install")?;
+
+    if !install_status.success() {
+        color_eyre::eyre::bail!("cargo install failed");
+    }
+
+    // Clear the update_available flag in DB
+    let config = config::load_config()?;
+    let db = db::Database::open(&config.general.db_path)?;
+    let _ = db.set_setting("update_available", "false");
+
+    println!("\nUpdate complete. Restart nexus to use the new version.");
+    Ok(())
 }
 
 fn acquire_lock() -> Result<fslock::LockFile> {
