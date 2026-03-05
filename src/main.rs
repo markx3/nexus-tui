@@ -423,9 +423,9 @@ fn run_update() -> Result<()> {
 
     println!("Updating nexus from {}", source_dir);
 
-    // git pull
+    // git pull origin main (explicit branch — works regardless of local checkout)
     let pull_status = Command::new("git")
-        .args(["-C", source_dir, "pull"])
+        .args(["-C", source_dir, "pull", "origin", "main"])
         .status()
         .wrap_err("failed to run git pull")?;
 
