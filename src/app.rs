@@ -173,8 +173,15 @@ impl App {
             .unwrap_or(TREE_WIDTH_PCT_DEFAULT)
             .clamp(TREE_WIDTH_PCT_MIN, TREE_WIDTH_PCT_MAX);
 
-        let tree_state = TreeState::new(&tree);
-        let selection = SelectionState::default();
+        let mut tree_state = TreeState::new(&tree);
+        let mut selection = SelectionState::default();
+
+        // Restore last-active session cursor position
+        if let Ok(Some(last_id)) = db.get_setting("last_session_id") {
+            if tree_state.jump_to_session(&last_id, &tree) {
+                selection.selected = Some(SelectionTarget::Session(last_id));
+            }
+        }
         let cached_counts = count_sessions(&tree);
 
         // Spawn capture worker and feedback scanner if tmux is available
@@ -200,7 +207,7 @@ impl App {
             .map(|v| v == "true")
             .unwrap_or(false);
 
-        Self {
+        let mut app = Self {
             should_quit: false,
             boot_done: false,
             last_tick: Instant::now(),
@@ -248,7 +255,13 @@ impl App {
             pending_wt_teardown: None,
             update_available,
             update_rx,
-        }
+        };
+
+        // Wire up interactor to the restored session (if any)
+        app.refresh_cached_selected();
+        app.sync_interactor_to_selection();
+
+        app
     }
 
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -577,6 +590,9 @@ impl App {
                 self.show_help = !self.show_help;
             }
             NexusCommand::Quit => {
+                if let Some(SelectionTarget::Session(ref id)) = self.selection.selected {
+                    let _ = self.db.set_setting("last_session_id", id);
+                }
                 self.should_quit = true;
             }
             NexusCommand::ToggleDeadSessions => {
@@ -621,6 +637,9 @@ impl App {
     fn handle_fallback_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => {
+                if let Some(SelectionTarget::Session(ref id)) = self.selection.selected {
+                    let _ = self.db.set_setting("last_session_id", id);
+                }
                 self.should_quit = true;
             }
             KeyCode::Char('?') => {
