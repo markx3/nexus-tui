@@ -409,21 +409,29 @@ fn print_session_detail(s: &types::SessionSummary) {
 }
 
 fn run_update() -> Result<()> {
-    use std::process::Command;
-
     let source_dir = env!("CARGO_MANIFEST_DIR");
 
-    if !std::path::Path::new(source_dir).join(".git").exists() {
-        color_eyre::eyre::bail!(
-            "Source directory not found or is not a git repo: {}\n\
-             This can happen if the repo was moved after installation.",
-            source_dir
-        );
+    if std::path::Path::new(source_dir).join(".git").exists() {
+        run_update_dev(source_dir)?;
+    } else {
+        run_update_git()?;
     }
 
-    println!("Updating nexus from {}", source_dir);
+    // Clear the update_available flag in DB
+    let config = config::load_config()?;
+    let db = db::Database::open(&config.general.db_path)?;
+    let _ = db.set_setting("update_available", "false");
 
-    // git pull origin main (explicit branch — works regardless of local checkout)
+    println!("\nUpdate complete. Restart nexus to use the new version.");
+    Ok(())
+}
+
+/// Developer mode: pull latest source and rebuild from local path.
+fn run_update_dev(source_dir: &str) -> Result<()> {
+    use std::process::Command;
+
+    println!("Updating nexus from local source: {}", source_dir);
+
     let pull_status = Command::new("git")
         .args(["-C", source_dir, "pull", "origin", "main"])
         .status()
@@ -433,7 +441,6 @@ fn run_update() -> Result<()> {
         color_eyre::eyre::bail!("git pull failed");
     }
 
-    // cargo install --path .
     println!("\nRebuilding...");
     let install_status = Command::new("cargo")
         .args(["install", "--path", source_dir])
@@ -444,12 +451,25 @@ fn run_update() -> Result<()> {
         color_eyre::eyre::bail!("cargo install failed");
     }
 
-    // Clear the update_available flag in DB
-    let config = config::load_config()?;
-    let db = db::Database::open(&config.general.db_path)?;
-    let _ = db.set_setting("update_available", "false");
+    Ok(())
+}
 
-    println!("\nUpdate complete. Restart nexus to use the new version.");
+/// User mode: reinstall from the upstream git repository.
+fn run_update_git() -> Result<()> {
+    use std::process::Command;
+
+    let repo_url = env!("CARGO_PKG_REPOSITORY");
+    println!("Updating nexus from {}", repo_url);
+
+    let install_status = Command::new("cargo")
+        .args(["install", "--git", repo_url, "--force"])
+        .status()
+        .wrap_err("failed to run cargo install --git")?;
+
+    if !install_status.success() {
+        color_eyre::eyre::bail!("cargo install --git failed");
+    }
+
     Ok(())
 }
 

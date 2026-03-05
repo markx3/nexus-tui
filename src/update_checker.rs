@@ -1,8 +1,8 @@
 //! Background update checker for Nexus.
 //!
-//! Spawns a thread that checks if the git source repo (captured at compile time
-//! via `CARGO_MANIFEST_DIR`) has newer commits on `origin/main`. Rate-limited
-//! to at most once per hour via a DB timestamp.
+//! Spawns a thread that runs `git ls-remote --tags` against the upstream repo
+//! and compares the latest semver tag against the compiled-in version.
+//! Rate-limited to at most once per hour via a DB timestamp.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -12,14 +12,17 @@ use std::time::Duration;
 use rusqlite::{params, Connection};
 use wait_timeout::ChildExt;
 
-/// Compile-time path to the source repository.
-const SOURCE_DIR: &str = env!("CARGO_MANIFEST_DIR");
+/// Upstream repository URL, baked in at compile time.
+const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
+
+/// Current version, baked in at compile time.
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Minimum interval between network checks (1 hour).
 const CHECK_INTERVAL_SECS: u64 = 3600;
 
-/// Timeout for the `git fetch` subprocess.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout for the `git ls-remote` subprocess.
+const LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Spawn the update checker thread.
 ///
@@ -43,11 +46,6 @@ pub fn spawn(db_path: &Path) -> mpsc::Receiver<bool> {
 /// Opens its own DB connection to avoid Send issues with the main thread's
 /// `Database`. WAL mode allows concurrent reads/writes safely.
 fn check_for_update(db_path: &Path) -> bool {
-    // If source dir doesn't exist or isn't a git repo, return persisted value
-    if !Path::new(SOURCE_DIR).join(".git").exists() {
-        return read_persisted_state(db_path);
-    }
-
     // Check rate limit
     if let Some(last_check) = read_setting(db_path, "last_update_check") {
         if let Ok(ts) = last_check.parse::<u64>() {
@@ -58,16 +56,25 @@ fn check_for_update(db_path: &Path) -> bool {
         }
     }
 
-    // Run git fetch with timeout
-    if !git_fetch_with_timeout(SOURCE_DIR, FETCH_TIMEOUT) {
-        return read_persisted_state(db_path);
-    }
+    // Run git ls-remote --tags with timeout
+    let output = match ls_remote_tags(REPO_URL, LS_REMOTE_TIMEOUT) {
+        Some(o) => o,
+        None => return read_persisted_state(db_path),
+    };
 
-    // Count commits behind origin/main
-    let behind = commits_behind(SOURCE_DIR);
-    let available = behind > 0;
+    // Parse the current compiled-in version
+    let current = match parse_semver(CURRENT_VERSION) {
+        Some(v) => v,
+        None => return read_persisted_state(db_path),
+    };
 
-    // Persist results
+    // Find the latest tag and compare
+    let available = match latest_tag_version(&output) {
+        Some(latest) => is_newer(latest, current),
+        None => false,
+    };
+
+    // Persist results (only on successful network call)
     let now = crate::time_utils::now_epoch().to_string();
     write_setting(db_path, "last_update_check", &now);
     write_setting(
@@ -79,46 +86,68 @@ fn check_for_update(db_path: &Path) -> bool {
     available
 }
 
-/// Run `git fetch --quiet origin` with a timeout. Returns true on success.
-fn git_fetch_with_timeout(dir: &str, timeout: Duration) -> bool {
-    let child = Command::new("git")
-        .args(["-C", dir, "fetch", "--quiet", "origin"])
-        .stdout(Stdio::null())
+/// Run `git ls-remote --tags <repo_url>` with a timeout.
+/// Returns the stdout on success, `None` on failure or timeout.
+fn ls_remote_tags(repo_url: &str, timeout: Duration) -> Option<String> {
+    let mut child = Command::new("git")
+        .args(["ls-remote", "--tags", repo_url])
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn();
-
-    let mut child = match child {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+        .spawn()
+        .ok()?;
 
     match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status.success(),
+        Ok(Some(status)) if status.success() => {
+            let output = child.wait_with_output().ok()?;
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Ok(Some(_)) => None, // non-zero exit
         Ok(None) => {
             // Timed out — kill the process
             let _ = child.kill();
             let _ = child.wait();
-            false
+            None
         }
-        Err(_) => false,
+        Err(_) => None,
     }
 }
 
-/// Count how many commits HEAD is behind origin/main.
-fn commits_behind(dir: &str) -> u64 {
-    let output = Command::new("git")
-        .args(["-C", dir, "rev-list", "--count", "HEAD..origin/main"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
+/// Parse a semver string like "0.3.0" or "v0.3.0" into (major, minor, patch).
+fn parse_semver(tag: &str) -> Option<(u64, u64, u64)> {
+    let s = tag.strip_prefix('v').unwrap_or(tag);
+    let mut parts = s.splitn(3, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
 
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0),
-        _ => 0,
+/// Parse all tags from `git ls-remote --tags` output and return the highest
+/// semver version found. Handles `^{}` dereference entries.
+fn latest_tag_version(ls_remote_output: &str) -> Option<(u64, u64, u64)> {
+    let mut best: Option<(u64, u64, u64)> = None;
+
+    for line in ls_remote_output.lines() {
+        // Format: "<sha>\trefs/tags/<tagname>"
+        let refname = line.split('\t').nth(1)?;
+        let tag = refname
+            .strip_prefix("refs/tags/")
+            .unwrap_or(refname)
+            .trim_end_matches("^{}");
+
+        if let Some(ver) = parse_semver(tag) {
+            if best.is_none_or(|b| is_newer(ver, b)) {
+                best = Some(ver);
+            }
+        }
     }
+
+    best
+}
+
+/// Returns true if `candidate` is strictly newer than `current`.
+fn is_newer(candidate: (u64, u64, u64), current: (u64, u64, u64)) -> bool {
+    candidate > current
 }
 
 /// Read the persisted `update_available` setting from the DB.
@@ -152,6 +181,8 @@ fn write_setting(db_path: &Path, key: &str, value: &str) {
 mod tests {
     use super::*;
 
+    // --- DB helper tests ---
+
     #[test]
     fn read_setting_missing_db() {
         assert_eq!(read_setting(Path::new("/nonexistent/db"), "key"), None);
@@ -167,7 +198,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
 
-        // Create the settings table
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -182,6 +212,8 @@ mod tests {
         );
     }
 
+    // --- Rate-limit tests ---
+
     #[test]
     fn rate_limit_respects_interval() {
         let dir = tempfile::tempdir().unwrap();
@@ -194,13 +226,10 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        // Set last check to "now" — should return persisted state
         let now = crate::time_utils::now_epoch().to_string();
         write_setting(&db_path, "last_update_check", &now);
         write_setting(&db_path, "update_available", "true");
 
-        // check_for_update should short-circuit and return persisted "true"
-        // (won't actually git fetch because rate limit hits first)
         let result = check_for_update(&db_path);
         assert!(result); // returns persisted "true"
     }
@@ -217,32 +246,107 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        // Set last check to 2 hours ago — should allow a new check
         let old = crate::time_utils::now_epoch() - 7200;
         write_setting(&db_path, "last_update_check", &old.to_string());
         write_setting(&db_path, "update_available", "false");
 
-        // This will attempt git fetch on SOURCE_DIR (our actual repo) which
-        // may or may not have an upstream. The important thing is it doesn't
-        // short-circuit on rate limit. It will proceed past rate limit check
-        // and either succeed or fail gracefully.
         let _result = check_for_update(&db_path);
-        // Verify the timestamp was updated (proving it didn't short-circuit)
         let new_ts = read_setting(&db_path, "last_update_check")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        // If git fetch succeeded, timestamp should be recent
-        // If it failed (no remote), timestamp stays old — both are valid
         assert!(new_ts >= old);
     }
 
+    // --- Semver parsing tests ---
+
     #[test]
-    fn commits_behind_invalid_dir() {
-        assert_eq!(commits_behind("/nonexistent/path"), 0);
+    fn parse_semver_plain() {
+        assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
     }
 
     #[test]
-    fn git_fetch_invalid_dir() {
-        assert!(!git_fetch_with_timeout("/nonexistent/path", FETCH_TIMEOUT));
+    fn parse_semver_with_v_prefix() {
+        assert_eq!(parse_semver("v0.3.0"), Some((0, 3, 0)));
+    }
+
+    #[test]
+    fn parse_semver_invalid() {
+        assert_eq!(parse_semver("not-a-version"), None);
+        assert_eq!(parse_semver("1.2"), None);
+        assert_eq!(parse_semver(""), None);
+    }
+
+    #[test]
+    fn parse_semver_zero() {
+        assert_eq!(parse_semver("0.0.0"), Some((0, 0, 0)));
+    }
+
+    // --- is_newer tests ---
+
+    #[test]
+    fn is_newer_major() {
+        assert!(is_newer((1, 0, 0), (0, 9, 9)));
+    }
+
+    #[test]
+    fn is_newer_minor() {
+        assert!(is_newer((0, 4, 0), (0, 3, 5)));
+    }
+
+    #[test]
+    fn is_newer_patch() {
+        assert!(is_newer((0, 3, 1), (0, 3, 0)));
+    }
+
+    #[test]
+    fn is_newer_equal() {
+        assert!(!is_newer((0, 3, 0), (0, 3, 0)));
+    }
+
+    #[test]
+    fn is_newer_older() {
+        assert!(!is_newer((0, 2, 0), (0, 3, 0)));
+    }
+
+    // --- latest_tag_version tests ---
+
+    #[test]
+    fn latest_tag_from_ls_remote_output() {
+        let output = "\
+abc123\trefs/tags/v0.1.0\n\
+def456\trefs/tags/v0.2.0\n\
+ghi789\trefs/tags/v0.3.0\n\
+ghi789\trefs/tags/v0.3.0^{}\n";
+        assert_eq!(latest_tag_version(output), Some((0, 3, 0)));
+    }
+
+    #[test]
+    fn latest_tag_skips_non_semver() {
+        let output = "\
+abc123\trefs/tags/release-candidate\n\
+def456\trefs/tags/v0.2.0\n\
+ghi789\trefs/tags/nightly\n";
+        assert_eq!(latest_tag_version(output), Some((0, 2, 0)));
+    }
+
+    #[test]
+    fn latest_tag_empty_output() {
+        assert_eq!(latest_tag_version(""), None);
+    }
+
+    #[test]
+    fn latest_tag_no_semver_tags() {
+        let output = "abc123\trefs/tags/release-candidate\n";
+        assert_eq!(latest_tag_version(output), None);
+    }
+
+    #[test]
+    fn latest_tag_picks_highest() {
+        let output = "\
+a\trefs/tags/v1.0.0\n\
+b\trefs/tags/v0.9.0\n\
+c\trefs/tags/v2.1.3\n\
+d\trefs/tags/v2.1.2\n";
+        assert_eq!(latest_tag_version(output), Some((2, 1, 3)));
     }
 }

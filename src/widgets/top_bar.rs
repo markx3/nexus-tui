@@ -61,7 +61,7 @@ pub fn render_top_bar(
             theme::style_for(ThemeElement::TopBarLabel),
         ));
         spans.push(Span::styled(
-            "UPDATE",
+            "Update available! Run: nexus update",
             theme::style_for(ThemeElement::Hazard),
         ));
     }
