@@ -20,6 +20,10 @@ CI runs `cargo fmt --check`, then `clippy -D warnings`, then `cargo test` on Ubu
 
 Always update `README.md` when adding or removing user-facing functionality (features, keybindings, CLI commands, configuration options).
 
+## Releases
+
+Version is tracked in `Cargo.toml`. When bumping the version, also create a git tag (`git tag vX.Y.Z`) and push it (`git push origin vX.Y.Z`). Always confirm with the user before creating or pushing tags.
+
 ## Architecture
 
 Nexus is a cyberpunk-themed TUI session manager for Claude Code, built with Rust/Ratatui/TachyonFX. It wraps Claude Code sessions in tmux panes and provides a dashboard with live terminal preview, session grouping, and full CRUD.
