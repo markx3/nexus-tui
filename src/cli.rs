@@ -94,4 +94,6 @@ pub enum Commands {
         /// Group name
         name: String,
     },
+    /// Update nexus to the latest version from source
+    Update,
 }

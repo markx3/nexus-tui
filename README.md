@@ -103,6 +103,7 @@ nexus delete <id> --remove-worktree  # Also clean up the git worktree
 nexus rename <id> <name>             # Rename a session
 nexus move <id> --group <name>       # Move session to a group
 nexus group-create <name>            # Create a new group
+nexus update                         # Update nexus to the latest version
 ```
 
 ## Configuration
@@ -216,6 +217,12 @@ set -euo pipefail
 git -C "$NEXUS_REPO_ROOT" worktree add "$NEXUS_WORKTREE_PATH" -b "$NEXUS_BRANCH"
 cp "$NEXUS_REPO_ROOT/.env.example" "$NEXUS_WORKTREE_PATH/.env" 2>/dev/null || true
 ```
+
+### Auto-Update
+
+Nexus checks for updates on startup (at most once per hour) by comparing your local build against the upstream git repo. If a newer version is available, an **UPDATE** badge appears in the top bar. Run `nexus update` to pull the latest code and rebuild.
+
+The update check uses the source directory from your original `cargo install --path .` build. If the source directory no longer exists, the check is silently skipped.
 
 ## Terminal Setup (macOS)
 
