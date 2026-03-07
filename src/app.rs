@@ -607,6 +607,7 @@ impl App {
                 self.persist_theme();
             }
             NexusCommand::OpenLazygit => self.open_lazygit(),
+            NexusCommand::OpenEditor => self.open_editor(),
             NexusCommand::PrevTheme => {
                 theme::prev_theme();
                 self.rebuild_attention_effects();
@@ -1757,6 +1758,56 @@ impl App {
         if let Err(e) = result {
             self.status_message = Some((format!("Failed to launch lazygit: {e}"), Instant::now()));
         }
+    }
+
+    /// Suspend the TUI, open the user's editor in the selected session's cwd, then restore.
+    ///
+    /// Editor resolution: `$EDITOR` → `nvim` → `vim`.
+    fn open_editor(&mut self) {
+        let cwd = match self.cached_selected.as_ref().and_then(|s| s.cwd.as_ref()) {
+            Some(c) => c.clone(),
+            None => {
+                self.status_message = Some((
+                    "No session selected or no cwd available".into(),
+                    Instant::now(),
+                ));
+                return;
+            }
+        };
+
+        let editor = std::env::var("EDITOR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if Self::command_exists("nvim") {
+                    "nvim".into()
+                } else {
+                    "vim".into()
+                }
+            });
+
+        let result = with_suspended_tui(|| {
+            std::process::Command::new(&editor)
+                .current_dir(&cwd)
+                .status()
+        });
+        self.needs_full_redraw = true;
+
+        if let Err(e) = result {
+            self.status_message =
+                Some((format!("Failed to launch {editor}: {e}"), Instant::now()));
+        }
+    }
+
+    /// Check if a command exists on $PATH.
+    fn command_exists(name: &str) -> bool {
+        std::process::Command::new("which")
+            .arg(name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     // -----------------------------------------------------------------------
