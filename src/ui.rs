@@ -25,6 +25,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         frame.render_widget(msg, area);
         app.area_tree = Rect::default();
         app.area_theme_label = Rect::default();
+        app.area_logo_border_y = 0;
         return;
     }
 
@@ -45,13 +46,34 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     // Right column: interactor fills everything
     let interactor_area = right_column;
 
-    // Split left panel: tree + optional logo
-    let (tree_area, logo_area) = if left_panel.height >= 20 {
+    // Split left panel: tree + optional logo (dynamic height)
+    let logo_h = app.logo_height.min(left_panel.height / 2);
+    let (tree_area, logo_area, indicator_area) = if logo_h <= 2 {
+        // GoL hidden: 1-row indicator bar at bottom
+        if left_panel.height > 1 {
+            let [tree, indicator] =
+                Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(left_panel);
+            app.area_logo_border_y = indicator.y;
+            (tree, None, Some(indicator))
+        } else {
+            app.area_logo_border_y = 0;
+            (left_panel, None, None)
+        }
+    } else if left_panel.height >= logo_h + 5 {
+        // Enough room for tree + logo
         let [tree, logo] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(9)]).areas(left_panel);
-        (tree, Some(logo))
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(logo_h)]).areas(left_panel);
+        app.area_logo_border_y = logo.y;
+        (tree, Some(logo), None)
+    } else if left_panel.height > 1 {
+        // Not enough room for full logo — show indicator bar as fallback drag handle
+        let [tree, indicator] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(left_panel);
+        app.area_logo_border_y = indicator.y;
+        (tree, None, Some(indicator))
     } else {
-        (left_panel, None)
+        app.area_logo_border_y = 0;
+        (left_panel, None, None)
     };
 
     // Store tree inner rect for mouse hit-testing
@@ -93,6 +115,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, elapsed: Duration) {
 
     if let Some(logo_area) = logo_area {
         widgets::logo::render_logo(frame, logo_area, &app.logo_state);
+    }
+
+    if let Some(indicator) = indicator_area {
+        let bar = Paragraph::new(Line::from(Span::styled(
+            " ◉ NEXUS ",
+            theme::style_for(ThemeElement::LogoNexus),
+        )))
+        .style(Style::new().bg(theme::surface()));
+        frame.render_widget(bar, indicator);
     }
 
     // Store interactor inner area for mouse text selection hit-testing

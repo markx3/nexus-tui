@@ -36,6 +36,9 @@ const LOGO_FRAME_INTERVAL: Duration = Duration::from_millis(300);
 const TREE_WIDTH_PCT_MIN: u16 = 15;
 const TREE_WIDTH_PCT_MAX: u16 = 40;
 const TREE_WIDTH_PCT_DEFAULT: u16 = 20;
+const LOGO_HEIGHT_MIN: u16 = 1;
+const LOGO_HEIGHT_MAX: u16 = 40;
+const LOGO_HEIGHT_DEFAULT: u16 = 9;
 
 /// Suspend the TUI (alternate screen, raw mode, mouse/paste), run a closure,
 /// then restore the TUI. Used by fullscreen attach and lazygit.
@@ -115,6 +118,10 @@ pub struct App {
     pub(crate) tree_width_pct: u16,
     pub(crate) dragging_border: bool,
     pub(crate) area_border_x: u16,
+    // Draggable tree/logo border
+    pub(crate) logo_height: u16,
+    pub(crate) dragging_logo_border: bool,
+    pub(crate) area_logo_border_y: u16,
     // Feedback scanner: sessions needing user attention (tmux session names)
     pub(crate) attention_sessions: HashSet<String>,
     feedback_rx: Option<mpsc::Receiver<HashSet<String>>>,
@@ -172,6 +179,14 @@ impl App {
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(TREE_WIDTH_PCT_DEFAULT)
             .clamp(TREE_WIDTH_PCT_MIN, TREE_WIDTH_PCT_MAX);
+
+        let logo_height = db
+            .get_setting("logo_height")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(LOGO_HEIGHT_DEFAULT)
+            .clamp(LOGO_HEIGHT_MIN, LOGO_HEIGHT_MAX);
 
         let mut tree_state = TreeState::new(&tree);
         let mut selection = SelectionState::default();
@@ -248,6 +263,9 @@ impl App {
             tree_width_pct,
             dragging_border: false,
             area_border_x: 0,
+            logo_height,
+            dragging_logo_border: false,
+            area_logo_border_y: 0,
             attention_sessions: HashSet::new(),
             feedback_rx,
             attention_effects: HashMap::new(),
@@ -331,13 +349,14 @@ impl App {
                 self.dirty = true;
             }
 
-            // Advance logo animation frame
-            if now.duration_since(self.logo_last_advance) >= LOGO_FRAME_INTERVAL {
+            // Advance logo animation frame (skip when GoL hidden)
+            if self.logo_height > 2
+                && now.duration_since(self.logo_last_advance) >= LOGO_FRAME_INTERVAL
+            {
                 let term_size = terminal.size()?;
-                // Logo panel: tree_width_pct of width, 9 rows high, minus 2 for borders each
                 let logo_w =
                     (term_size.width * self.tree_width_pct / 100).saturating_sub(2) as usize;
-                let logo_h = 9usize.saturating_sub(2);
+                let logo_h = (self.logo_height as usize).saturating_sub(2);
                 self.logo_state.advance(logo_w, logo_h);
                 self.logo_last_advance = now;
                 self.dirty = true;
@@ -423,6 +442,16 @@ impl App {
                         return;
                     }
 
+                    // Check if click is on/near the horizontal logo border (±1 row tolerance)
+                    let on_logo_border = self.area_logo_border_y > 0
+                        && row >= self.area_logo_border_y.saturating_sub(1)
+                        && row <= self.area_logo_border_y + 1
+                        && col < self.area_border_x;
+                    if on_logo_border {
+                        self.dragging_logo_border = true;
+                        return;
+                    }
+
                     let inner = self.area_interactor_inner;
                     if self.input_mode == InputMode::Normal
                         && !self.show_help
@@ -452,6 +481,15 @@ impl App {
                         }
                         return;
                     }
+                    if self.dragging_logo_border {
+                        if let Ok((_, term_rows)) = crossterm::terminal::size() {
+                            let left_panel_height = term_rows.saturating_sub(3);
+                            let max_logo = (left_panel_height / 2).min(LOGO_HEIGHT_MAX);
+                            let new_height = term_rows.saturating_sub(row);
+                            self.logo_height = new_height.clamp(LOGO_HEIGHT_MIN, max_logo);
+                        }
+                        return;
+                    }
                     if let Some(ref mut sel) = self.text_selection {
                         let inner = self.area_interactor_inner;
                         sel.end = (
@@ -469,6 +507,13 @@ impl App {
                             .db
                             .set_setting("tree_width_pct", &self.tree_width_pct.to_string());
                         self.sync_interactor_size();
+                        return;
+                    }
+                    if self.dragging_logo_border {
+                        self.dragging_logo_border = false;
+                        let _ = self
+                            .db
+                            .set_setting("logo_height", &self.logo_height.to_string());
                         return;
                     }
                     if let Some(ref sel) = self.text_selection {
