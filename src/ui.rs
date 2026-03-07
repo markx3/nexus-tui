@@ -680,7 +680,6 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+d", "Delete selected item"),
         ("Alt+x", "Kill tmux (mark detached)"),
         ("Alt+H", "Toggle past/dead sessions"),
-        ("Alt+f", "Fullscreen attach to session"),
         ("Alt+t / Alt+T", "Cycle theme"),
         ("Alt+l", "Open lazygit in session cwd"),
         ("Alt+v", "Open editor in session cwd"),

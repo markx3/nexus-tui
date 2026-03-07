@@ -12,7 +12,6 @@ Nexus gives you a persistent, organized workspace for managing multiple Claude C
 
 - **Live terminal preview** — see Claude Code output in real-time without switching windows
 - **Session grouping** — organize sessions by project via config or on-the-fly
-- **Fullscreen attach** — jump into any session with `Alt+f`, detach back to the dashboard
 - **8 color themes** — cycle with `Alt+t`, persisted across restarts
 - **Session lifecycle** — create, rename, move, delete, and kill sessions from the TUI or CLI
 - **Worktree isolation** — optionally create a dedicated git worktree per session for branch-level isolation
@@ -68,7 +67,6 @@ The TUI shows a session tree on the left and a live terminal preview on the righ
 | `Alt+d` | Delete selected item |
 | `Alt+x` | Kill tmux session (mark detached) |
 | `Alt+H` | Toggle past/dead sessions |
-| `Alt+f` | Fullscreen attach to session |
 | `Alt+t` / `Alt+T` | Cycle theme forward/backward |
 | `Alt+l` | Open lazygit in session cwd |
 | `Alt+v` | Open editor ($EDITOR/nvim/vim) in session cwd |

@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span, Text};
 
 use crate::conversation;
 use crate::theme;
-use crate::tmux::{key_event_to_send_args, TmuxManager};
+use crate::tmux::{alt_key_to_send_args, key_event_to_send_args, TmuxManager};
 use crate::types::*;
 
 /// State for the session interactor panel.
@@ -226,10 +226,7 @@ impl InteractorState {
                         }
                         KeyCode::Char('g') => RouteResult::NexusCommand(NexusCommand::NewGroup),
                         KeyCode::Char('x') => RouteResult::NexusCommand(NexusCommand::KillTmux),
-                        KeyCode::Char('f') => {
-                            RouteResult::NexusCommand(NexusCommand::FullscreenAttach)
-                        }
-                        KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::Backspace => {
+                        KeyCode::Char('h') | KeyCode::Char('?') => {
                             RouteResult::NexusCommand(NexusCommand::ToggleHelp)
                         }
                         KeyCode::Char('q') => RouteResult::NexusCommand(NexusCommand::Quit),
@@ -241,7 +238,18 @@ impl InteractorState {
                         KeyCode::Char('l') => RouteResult::NexusCommand(NexusCommand::OpenLazygit),
                         KeyCode::Char('v') => RouteResult::NexusCommand(NexusCommand::OpenEditor),
                         KeyCode::Char('p') => RouteResult::NexusCommand(NexusCommand::OpenFinder),
-                        _ => RouteResult::Ignored,
+                        other => {
+                            // Forward unbound Alt+key to tmux (word-forward, word-backward, etc.)
+                            if let Some(tmux_name) = current_tmux_name {
+                                if let Some(args) = alt_key_to_send_args(other, key.modifiers) {
+                                    let _ = self.tmux.send_keys(tmux_name, &args);
+                                    self.live_scroll_offset = 0;
+                                    let _ = self.nudge_tx.send(());
+                                    return RouteResult::Handled;
+                                }
+                            }
+                            RouteResult::Ignored
+                        }
                     };
                 }
 

@@ -630,7 +630,6 @@ impl App {
             NexusCommand::MoveSession => self.start_move_session(),
             NexusCommand::NewGroup => self.start_new_group(),
             NexusCommand::KillTmux => self.kill_tmux_session(),
-            NexusCommand::FullscreenAttach => self.fullscreen_attach(),
             NexusCommand::ToggleHelp => {
                 self.show_help = !self.show_help;
             }
@@ -665,20 +664,6 @@ impl App {
     }
 
     /// Fullscreen attach: suspend nexus TUI and attach to the selected tmux session.
-    fn fullscreen_attach(&mut self) {
-        let tmux_name = match self.cached_selected.as_ref() {
-            Some(s) if s.status == SessionStatus::Active => s.tmux_name.clone(),
-            _ => {
-                self.status_message =
-                    Some(("No active session to attach".to_string(), Instant::now()));
-                return;
-            }
-        };
-        if let Some(name) = tmux_name {
-            self.attach_tmux_session(&name);
-        }
-    }
-
     /// Fallback key handler when interactor_state is None (tmux unavailable).
     fn handle_fallback_key(&mut self, key: KeyEvent) {
         match key.code {
@@ -1699,8 +1684,7 @@ impl App {
     }
 
     /// Launch a detached tmux session in the background for the currently
-    /// selected session so the interactor can capture it. Does NOT attach
-    /// fullscreen — use `fullscreen_attach` (Alt+F) for that.
+    /// selected session so the interactor can capture it.
     fn ensure_session_launched(&mut self) {
         if !self.tmux_available {
             return;
@@ -1761,22 +1745,6 @@ impl App {
                 ));
             }
         }
-    }
-
-    /// Suspend the TUI, attach to a tmux session, then restore the TUI.
-    fn attach_tmux_session(&mut self, tmux_name: &str) {
-        let result = with_suspended_tui(|| self.tmux.resume_session(tmux_name));
-        self.needs_full_redraw = true;
-
-        if let Err(e) = result {
-            self.status_message = Some((format!("tmux attach failed: {e}"), Instant::now()));
-        }
-
-        // Re-sync after fullscreen: the capture worker may have stopped during
-        // attachment (error → cleared session), and session status may have
-        // changed (e.g., Detached→Active via launch before attach).
-        self.refresh_tree();
-        self.sync_interactor_to_selection();
     }
 
     /// Get the selected session's CWD, or set a status error and return `None`.

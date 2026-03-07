@@ -141,7 +141,6 @@ pub enum NexusCommand {
     MoveSession,
     NewGroup,
     KillTmux,
-    FullscreenAttach,
     ToggleHelp,
     Quit,
     ToggleDeadSessions,

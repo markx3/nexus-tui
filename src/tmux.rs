@@ -87,39 +87,6 @@ impl TmuxManager {
         Ok(())
     }
 
-    /// Resume (attach/switch-client) an existing session.
-    ///
-    /// If we're already inside tmux, uses `switch-client`; otherwise `attach`.
-    pub fn resume_session(&self, name: &str) -> Result<()> {
-        Self::validate_target(name)?;
-        let inside_tmux = std::env::var("TMUX").is_ok();
-
-        let status = if inside_tmux {
-            Command::new("tmux")
-                .args(["-L", &self.socket_name])
-                .args(["switch-client", "-t", name])
-                .stderr(Stdio::null())
-                .status()
-                .wrap_err("failed to run tmux switch-client")?
-        } else {
-            Command::new("tmux")
-                .args(["-L", &self.socket_name])
-                .args(["attach-session", "-t", name])
-                .stderr(Stdio::null())
-                .status()
-                .wrap_err("failed to run tmux attach-session")?
-        };
-
-        if !status.success() {
-            bail!(
-                "tmux resume exited with status {} for session '{}'",
-                status,
-                name
-            );
-        }
-        Ok(())
-    }
-
     /// List sessions on the nexus socket.
     ///
     /// Parses the output of:
@@ -558,6 +525,28 @@ pub fn key_event_to_send_args(event: &KeyEvent) -> Option<SendKeysArgs> {
         },
 
         // Unhandled key codes (Null, CapsLock, etc.) — ignore
+        _ => None,
+    }
+}
+
+/// Map an Alt+key combo to tmux send-keys args.
+///
+/// Called for Alt+key events that are NOT bound to a Nexus command, so they
+/// can be forwarded to the tmux pane as standard terminal navigation
+/// (e.g. Alt+f → word-forward, Alt+b → word-backward, Alt+arrows).
+pub fn alt_key_to_send_args(code: KeyCode, _modifiers: KeyModifiers) -> Option<SendKeysArgs> {
+    match code {
+        KeyCode::Char(c) => Some(SendKeysArgs::Named(match c {
+            'f' => "M-f",
+            'b' => "M-b",
+            _ => return None,
+        })),
+        KeyCode::Left => Some(SendKeysArgs::Named("M-Left")),
+        KeyCode::Right => Some(SendKeysArgs::Named("M-Right")),
+        KeyCode::Up => Some(SendKeysArgs::Named("M-Up")),
+        KeyCode::Down => Some(SendKeysArgs::Named("M-Down")),
+        KeyCode::Backspace => Some(SendKeysArgs::Named("M-BSpace")),
+        KeyCode::Delete => Some(SendKeysArgs::Named("M-DC")),
         _ => None,
     }
 }
