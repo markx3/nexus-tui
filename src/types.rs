@@ -148,6 +148,7 @@ pub enum NexusCommand {
     NextTheme,
     PrevTheme,
     OpenLazygit,
+    OpenEditor,
     OpenFinder,
 }
 

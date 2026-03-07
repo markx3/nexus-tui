@@ -239,6 +239,7 @@ impl InteractorState {
                         KeyCode::Char('t') => RouteResult::NexusCommand(NexusCommand::NextTheme),
                         KeyCode::Char('T') => RouteResult::NexusCommand(NexusCommand::PrevTheme),
                         KeyCode::Char('l') => RouteResult::NexusCommand(NexusCommand::OpenLazygit),
+                        KeyCode::Char('v') => RouteResult::NexusCommand(NexusCommand::OpenEditor),
                         KeyCode::Char('p') => RouteResult::NexusCommand(NexusCommand::OpenFinder),
                         _ => RouteResult::Ignored,
                     };

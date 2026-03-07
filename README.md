@@ -19,6 +19,7 @@ Nexus gives you a persistent, organized workspace for managing multiple Claude C
 - **Claude session resume** — automatically detects Claude Code session IDs so relaunched sessions resume where they left off
 - **CLI + JSON output** — scriptable interface for all operations (`nexus list --json`)
 - **Lazygit integration** — open lazygit in any session's working directory with `Alt+l`
+- **Editor integration** — open your editor in any session's working directory with `Alt+v`
 - **Text selection** — click+drag in the session panel to select and copy text (via OSC 52)
 - **Feedback detection** — automatically detects when Claude is waiting for permission or confirmation across all sessions, pulsing the session tree row with a glow effect (no setup required)
 
@@ -37,6 +38,7 @@ cargo install --path .
 ```
 
 Optional: [lazygit](https://github.com/jesseduffield/lazygit) for the `Alt+l` git integration.
+Optional: `nvim` or `vim` for the `Alt+v` editor integration (or set `$EDITOR`).
 
 ## Usage
 
@@ -69,6 +71,7 @@ The TUI shows a session tree on the left and a live terminal preview on the righ
 | `Alt+f` | Fullscreen attach to session |
 | `Alt+t` / `Alt+T` | Cycle theme forward/backward |
 | `Alt+l` | Open lazygit in session cwd |
+| `Alt+v` | Open editor ($EDITOR/nvim/vim) in session cwd |
 | `Alt+p` | Session finder (fuzzy search) |
 
 **Scrolling:**

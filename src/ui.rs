@@ -652,6 +652,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+f", "Fullscreen attach to session"),
         ("Alt+t / Alt+T", "Cycle theme"),
         ("Alt+l", "Open lazygit in session cwd"),
+        ("Alt+v", "Open editor in session cwd"),
         ("Alt+p", "Session finder"),
         ("", ""),
         ("", "Click+drag in session panel"),

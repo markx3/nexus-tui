@@ -606,7 +606,6 @@ impl App {
                     Some((format!("Theme: {}", theme::current_name()), Instant::now()));
                 self.persist_theme();
             }
-            NexusCommand::OpenLazygit => self.open_lazygit(),
             NexusCommand::PrevTheme => {
                 theme::prev_theme();
                 self.rebuild_attention_effects();
@@ -614,6 +613,8 @@ impl App {
                     Some((format!("Theme: {}", theme::current_name()), Instant::now()));
                 self.persist_theme();
             }
+            NexusCommand::OpenLazygit => self.open_lazygit(),
+            NexusCommand::OpenEditor => self.open_editor(),
             NexusCommand::OpenFinder => self.start_finder(),
         }
     }
@@ -1733,17 +1734,24 @@ impl App {
         self.sync_interactor_to_selection();
     }
 
-    /// Suspend the TUI, open lazygit in the selected session's cwd, then restore.
-    fn open_lazygit(&mut self) {
-        let cwd = match self.cached_selected.as_ref().and_then(|s| s.cwd.as_ref()) {
-            Some(c) => c.clone(),
+    /// Get the selected session's CWD, or set a status error and return `None`.
+    fn selected_cwd(&mut self) -> Option<PathBuf> {
+        match self.cached_selected.as_ref().and_then(|s| s.cwd.as_ref()) {
+            Some(c) => Some(c.clone()),
             None => {
                 self.status_message = Some((
                     "No session selected or no cwd available".into(),
                     Instant::now(),
                 ));
-                return;
+                None
             }
+        }
+    }
+
+    /// Suspend the TUI, open lazygit in the selected session's cwd, then restore.
+    fn open_lazygit(&mut self) {
+        let Some(cwd) = self.selected_cwd() else {
+            return;
         };
 
         let result = with_suspended_tui(|| {
@@ -1757,6 +1765,55 @@ impl App {
         if let Err(e) = result {
             self.status_message = Some((format!("Failed to launch lazygit: {e}"), Instant::now()));
         }
+    }
+
+    /// Suspend the TUI, open the user's editor in the selected session's cwd, then restore.
+    ///
+    /// Editor resolution: `$EDITOR` → `nvim` → `vim`. Supports `$EDITOR` values
+    /// with arguments (e.g. `code --wait`).
+    fn open_editor(&mut self) {
+        let Some(cwd) = self.selected_cwd() else {
+            return;
+        };
+
+        let editor_raw = std::env::var("EDITOR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if Self::command_exists("nvim") {
+                    "nvim".into()
+                } else {
+                    "vim".into()
+                }
+            });
+
+        let mut parts = editor_raw.split_whitespace();
+        let program = parts.next().unwrap_or("vim");
+        let args: Vec<&str> = parts.collect();
+
+        let result = with_suspended_tui(|| {
+            std::process::Command::new(program)
+                .args(&args)
+                .current_dir(&cwd)
+                .status()
+        });
+        self.needs_full_redraw = true;
+
+        if let Err(e) = result {
+            self.status_message =
+                Some((format!("Failed to launch {program}: {e}"), Instant::now()));
+        }
+    }
+
+    /// Check if a command exists on $PATH.
+    fn command_exists(name: &str) -> bool {
+        std::process::Command::new("which")
+            .arg(name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     // -----------------------------------------------------------------------
