@@ -435,10 +435,13 @@ fn run_update() -> Result<()> {
         run_update_git()?;
     }
 
-    // Clear the update_available flag in DB
+    // Clear the update_available flag and record checked version in DB
     let config = config::load_config()?;
     let db = db::Database::open(&config.general.db_path)?;
-    let _ = db.set_setting("update_available", "false");
+    if let Err(e) = db.set_setting("update_available", "false") {
+        eprintln!("Warning: could not clear update flag in database: {e}");
+    }
+    update_checker::record_post_update(&config.general.db_path);
 
     println!("\nUpdate complete. Restart nexus to use the new version.");
     Ok(())

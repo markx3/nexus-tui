@@ -22,7 +22,7 @@ Always update `README.md` when adding or removing user-facing functionality (fea
 
 ## Releases
 
-Version is tracked in `Cargo.toml`. When merging a version bump to main, always: (1) push main, (2) create a git tag (`git tag vX.Y.Z`), (3) push the tag (`git push origin vX.Y.Z`). Do not forget step 3 — tags must be pushed explicitly. Always confirm with the user before creating or pushing tags.
+Version is tracked in `Cargo.toml`. The `Cargo.toml` version must be bumped **before** creating the tag — version and tag must always match. When merging a version bump to main, always: (1) bump `Cargo.toml` version, (2) push main, (3) create a git tag (`git tag vX.Y.Z`), (4) push the tag (`git push origin vX.Y.Z`). Do not forget step 4 — tags must be pushed explicitly. Always confirm with the user before creating or pushing tags.
 
 ## Architecture
 

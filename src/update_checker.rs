@@ -41,6 +41,30 @@ pub fn spawn(db_path: &Path) -> mpsc::Receiver<bool> {
     rx
 }
 
+/// Record the latest remote tag as `update_checked_version` in the DB.
+///
+/// Called after a successful `nexus update` so the background checker won't
+/// re-trigger the banner when CURRENT_VERSION in the old binary lags the tag.
+pub(crate) fn record_post_update(db_path: &Path) {
+    let output = match ls_remote_tags(REPO_URL, LS_REMOTE_TIMEOUT) {
+        Some(o) => o,
+        None => {
+            eprintln!(
+                "Warning: could not query remote tags to record update version.\n  \
+                 The 'Update available' banner may reappear until the next successful check."
+            );
+            return;
+        }
+    };
+    if let Some((major, minor, patch)) = latest_tag_version(&output) {
+        write_setting(
+            db_path,
+            "update_checked_version",
+            &format!("{major}.{minor}.{patch}"),
+        );
+    }
+}
+
 /// Run the update check. Returns `true` if an update is available.
 ///
 /// Opens its own DB connection to avoid Send issues with the main thread's
@@ -68,10 +92,17 @@ fn check_for_update(db_path: &Path) -> bool {
         None => return read_persisted_state(db_path),
     };
 
-    // Find the latest tag and compare
+    // Find the latest tag and compare.
+    // Suppress if the user already ran `nexus update` for this version
+    // (handles the case where the tag was pushed before the version bump).
     let available = match latest_tag_version(&output) {
-        Some(latest) => is_newer(latest, current),
-        None => false,
+        Some(latest) if is_newer(latest, current) => {
+            let suppressed = read_setting(db_path, "update_checked_version")
+                .and_then(|v| parse_semver(&v))
+                .is_some_and(|checked| !is_newer(latest, checked));
+            !suppressed
+        }
+        _ => false,
     };
 
     // Persist results (only on successful network call)
