@@ -660,6 +660,7 @@ impl App {
             NexusCommand::OpenLazygit => self.open_lazygit(),
             NexusCommand::OpenEditor => self.open_editor(),
             NexusCommand::OpenFinder => self.start_finder(),
+            NexusCommand::FullscreenSession => self.fullscreen_session(),
         }
     }
 
@@ -1760,6 +1761,50 @@ impl App {
                 ));
                 None
             }
+        }
+    }
+
+    /// Suspend the Nexus TUI and attach to the selected session's tmux pane,
+    /// giving a chrome-free fullscreen view for native clipboard copy/paste.
+    ///
+    /// Only Active sessions have a live pane to attach to. `Ctrl+Q` (bound to
+    /// `detach-client` in [`TmuxManager::configure_server`]) returns to Nexus.
+    fn fullscreen_session(&mut self) {
+        let tmux_name = self
+            .cached_selected
+            .as_ref()
+            .filter(|s| s.status == SessionStatus::Active)
+            .and_then(|s| s.tmux_name.clone());
+        let Some(tmux_name) = tmux_name else {
+            self.status_message =
+                Some(("No live session to fullscreen".to_string(), Instant::now()));
+            return;
+        };
+
+        let mut cmd = match self.tmux.attach_command(&tmux_name) {
+            Ok(c) => c,
+            Err(e) => {
+                self.status_message = Some((format!("attach failed: {e}"), Instant::now()));
+                return;
+            }
+        };
+
+        // Ensure a chrome-free, full-size attach with working detach binds even
+        // if the server was started before these settings existed.
+        let _ = self.tmux.prepare_for_attach(&tmux_name);
+
+        let result = with_suspended_tui(|| cmd.status());
+        self.needs_full_redraw = true;
+
+        // The attach resized the tmux window to the outer terminal; snap the
+        // pane back down to the interactor panel size.
+        if let Some(ref mut is) = self.interactor_state {
+            is.invalidate_resize();
+        }
+        self.sync_interactor_size();
+
+        if let Err(e) = result {
+            self.status_message = Some((format!("attach failed: {e}"), Instant::now()));
         }
     }
 

@@ -119,6 +119,15 @@ impl InteractorState {
         }
     }
 
+    /// Force the next [`resize_if_needed`](Self::resize_if_needed) to fire.
+    ///
+    /// Used after returning from a fullscreen attach, which resizes the tmux
+    /// window to the outer terminal — the interactor panel size is unchanged,
+    /// so without this the pane would stay full-terminal-sized.
+    pub fn invalidate_resize(&mut self) {
+        self.last_resize = (0, 0);
+    }
+
     /// Load conversation log for a dead/detached session.
     ///
     /// Pre-renders the turns into `Text<'static>` so the render loop
@@ -239,6 +248,9 @@ impl InteractorState {
                         KeyCode::Char('l') => RouteResult::NexusCommand(NexusCommand::OpenLazygit),
                         KeyCode::Char('v') => RouteResult::NexusCommand(NexusCommand::OpenEditor),
                         KeyCode::Char('p') => RouteResult::NexusCommand(NexusCommand::OpenFinder),
+                        KeyCode::Char('z') => {
+                            RouteResult::NexusCommand(NexusCommand::FullscreenSession)
+                        }
                         other => {
                             // Forward unbound Alt+key to tmux (word-forward, word-backward, etc.)
                             if let Some(tmux_name) = current_tmux_name {

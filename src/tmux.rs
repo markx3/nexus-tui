@@ -182,6 +182,64 @@ impl TmuxManager {
         Ok(())
     }
 
+    /// Hide tmux's own status bar on the nexus server.
+    ///
+    /// Keeps a fullscreen attach (Alt+z) chrome-free. Idempotent and harmless
+    /// otherwise — `capture-pane` never grabs the status line. Called from
+    /// [`configure_server`](Self::configure_server) and again right before an
+    /// attach, so it applies even on a server started before this was added.
+    pub fn hide_status_bar(&self) {
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-option", "-g", "status", "off"])
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    /// Prepare the nexus server for a chrome-free, full-size fullscreen attach.
+    ///
+    /// Applied eagerly right before attaching so it works even when the server
+    /// was started before these settings existed (upgrade mid-session):
+    /// - hide the status bar,
+    /// - bind `Alt+z` and `Ctrl+Q` to `detach-client` so the user can return,
+    /// - switch the session's window back to `latest` sizing so it grows to the
+    ///   attaching client. Nexus sizes the pane to the interactor panel via
+    ///   [`resize_pane`](Self::resize_pane), which locks the window to a
+    ///   *manual* size; without this the attach shows the small window padded
+    ///   with dots instead of filling the terminal.
+    ///
+    /// Best-effort: individual tmux calls are ignored on failure.
+    pub fn prepare_for_attach(&self, session_name: &str) -> Result<()> {
+        Self::validate_target(session_name)?;
+        self.hide_status_bar();
+        for key in ["M-z", "C-q"] {
+            let _ = Command::new("tmux")
+                .args(["-L", &self.socket_name])
+                .args(["bind-key", "-n", key, "detach-client"])
+                .stderr(Stdio::null())
+                .status();
+        }
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-option", "-t", session_name, "window-size", "latest"])
+            .stderr(Stdio::null())
+            .status();
+        Ok(())
+    }
+
+    /// Build a `tmux attach-session` command for the given session.
+    ///
+    /// The returned [`Command`] inherits the parent's stdio (required for an
+    /// interactive attach) and is left for the caller to run — the caller is
+    /// responsible for suspending/restoring the surrounding TUI around it.
+    pub fn attach_command(&self, session_name: &str) -> Result<Command> {
+        Self::validate_target(session_name)?;
+        let mut cmd = Command::new("tmux");
+        cmd.args(["-L", &self.socket_name])
+            .args(["attach-session", "-t", session_name]);
+        Ok(cmd)
+    }
+
     /// Configure the nexus tmux server: true color support + keybindings.
     ///
     /// Sets `default-terminal`, `terminal-overrides`, and `COLORTERM` so
@@ -217,6 +275,16 @@ impl TmuxManager {
         let _ = Command::new("tmux")
             .args(["-L", &self.socket_name])
             .args(["set-option", "-g", "history-limit", "2000"])
+            .stderr(Stdio::null())
+            .status();
+
+        self.hide_status_bar();
+
+        // Alt+z → detach: makes the fullscreen "zoom" (Alt+z) a symmetric
+        // toggle — the same key that enters fullscreen exits it. Best-effort.
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["bind-key", "-n", "M-z", "detach-client"])
             .stderr(Stdio::null())
             .status();
 
@@ -787,8 +855,27 @@ session-c:win3:0:\n";
 
     #[test]
     fn test_validate_target_rejects_injection() {
-        assert!(TmuxManager::validate_target("sess;rm -rf /").is_err());
+        assert!(TmuxManager::validate_target("sess;bad").is_err());
         assert!(TmuxManager::validate_target("sess:window").is_err());
+    }
+
+    #[test]
+    fn test_attach_command_validates_target() {
+        let mgr = TmuxManager::new("nexus-test");
+        // Valid names build a command; invalid names are rejected up-front
+        // (same validation as every other target-taking method).
+        assert!(mgr.attach_command("good-name").is_ok());
+        assert!(mgr.attach_command("session.name").is_err());
+        assert!(mgr.attach_command("sess;bad").is_err());
+        assert!(mgr.attach_command("").is_err());
+    }
+
+    #[test]
+    fn test_prepare_for_attach_validates_target() {
+        let mgr = TmuxManager::new("nexus-test");
+        // Rejects invalid targets before issuing any tmux commands.
+        assert!(mgr.prepare_for_attach("bad.name").is_err());
+        assert!(mgr.prepare_for_attach("sess;bad").is_err());
     }
 
     #[test]
