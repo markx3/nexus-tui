@@ -182,6 +182,33 @@ impl TmuxManager {
         Ok(())
     }
 
+    /// Hide tmux's own status bar on the nexus server.
+    ///
+    /// Keeps a fullscreen attach (Alt+z) chrome-free. Idempotent and harmless
+    /// otherwise — `capture-pane` never grabs the status line. Called from
+    /// [`configure_server`](Self::configure_server) and again right before an
+    /// attach, so it applies even on a server started before this was added.
+    pub fn hide_status_bar(&self) {
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-option", "-g", "status", "off"])
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    /// Build a `tmux attach-session` command for the given session.
+    ///
+    /// The returned [`Command`] inherits the parent's stdio (required for an
+    /// interactive attach) and is left for the caller to run — the caller is
+    /// responsible for suspending/restoring the surrounding TUI around it.
+    pub fn attach_command(&self, session_name: &str) -> Result<Command> {
+        Self::validate_target(session_name)?;
+        let mut cmd = Command::new("tmux");
+        cmd.args(["-L", &self.socket_name])
+            .args(["attach-session", "-t", session_name]);
+        Ok(cmd)
+    }
+
     /// Configure the nexus tmux server: true color support + keybindings.
     ///
     /// Sets `default-terminal`, `terminal-overrides`, and `COLORTERM` so
@@ -219,6 +246,8 @@ impl TmuxManager {
             .args(["set-option", "-g", "history-limit", "2000"])
             .stderr(Stdio::null())
             .status();
+
+        self.hide_status_bar();
 
         // Ctrl+Q → detach (consistent way to return to Nexus TUI)
         let status = Command::new("tmux")
@@ -789,6 +818,17 @@ session-c:win3:0:\n";
     fn test_validate_target_rejects_injection() {
         assert!(TmuxManager::validate_target("sess;rm -rf /").is_err());
         assert!(TmuxManager::validate_target("sess:window").is_err());
+    }
+
+    #[test]
+    fn test_attach_command_validates_target() {
+        let mgr = TmuxManager::new("nexus-test");
+        // Valid names build a command; invalid names are rejected up-front
+        // (same validation as every other target-taking method).
+        assert!(mgr.attach_command("good-name").is_ok());
+        assert!(mgr.attach_command("session.name").is_err());
+        assert!(mgr.attach_command("sess;rm -rf /").is_err());
+        assert!(mgr.attach_command("").is_err());
     }
 
     #[test]

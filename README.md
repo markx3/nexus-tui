@@ -21,6 +21,7 @@ Nexus gives you a persistent, organized workspace for managing multiple Claude C
 - **Lazygit integration** — open lazygit in any session's working directory with `Alt+l`
 - **Editor integration** — open your editor in any session's working directory with `Alt+v`
 - **Text selection** — click+drag in the session panel to select and copy text (via OSC 52)
+- **Fullscreen session** — `Alt+z` attaches to the session's tmux pane full-screen (no TUI chrome) for clean native-terminal copy/paste; `Ctrl+Q` returns to Nexus
 - **Feedback detection** — automatically detects when Claude is waiting for permission or confirmation across all sessions, pulsing the session tree row with a glow effect (no setup required)
 
 ## Install
@@ -72,6 +73,7 @@ The TUI shows a session tree on the left and a live terminal preview on the righ
 | `Alt+l` | Open lazygit in session cwd |
 | `Alt+v` | Open editor ($EDITOR/nvim/vim) in session cwd |
 | `Alt+p` | Session finder (fuzzy search) |
+| `Alt+z` | Fullscreen (attach) the session — `Ctrl+Q` returns to Nexus |
 
 **Scrolling:**
 

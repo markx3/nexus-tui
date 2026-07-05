@@ -149,6 +149,7 @@ pub enum NexusCommand {
     OpenLazygit,
     OpenEditor,
     OpenFinder,
+    FullscreenSession,
 }
 
 /// Result from routing an event through the interactor.

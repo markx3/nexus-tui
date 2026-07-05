@@ -689,6 +689,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ("Alt+l", "Open lazygit in session cwd"),
         ("Alt+v", "Open editor in session cwd"),
         ("Alt+p", "Session finder"),
+        ("Alt+z", "Fullscreen session (Ctrl+Q returns)"),
         ("", ""),
         ("", "Click+drag in session panel"),
         ("", "to select and copy text."),
