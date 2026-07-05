@@ -196,6 +196,37 @@ impl TmuxManager {
             .status();
     }
 
+    /// Prepare the nexus server for a chrome-free, full-size fullscreen attach.
+    ///
+    /// Applied eagerly right before attaching so it works even when the server
+    /// was started before these settings existed (upgrade mid-session):
+    /// - hide the status bar,
+    /// - bind `Alt+z` and `Ctrl+Q` to `detach-client` so the user can return,
+    /// - switch the session's window back to `latest` sizing so it grows to the
+    ///   attaching client. Nexus sizes the pane to the interactor panel via
+    ///   [`resize_pane`](Self::resize_pane), which locks the window to a
+    ///   *manual* size; without this the attach shows the small window padded
+    ///   with dots instead of filling the terminal.
+    ///
+    /// Best-effort: individual tmux calls are ignored on failure.
+    pub fn prepare_for_attach(&self, session_name: &str) -> Result<()> {
+        Self::validate_target(session_name)?;
+        self.hide_status_bar();
+        for key in ["M-z", "C-q"] {
+            let _ = Command::new("tmux")
+                .args(["-L", &self.socket_name])
+                .args(["bind-key", "-n", key, "detach-client"])
+                .stderr(Stdio::null())
+                .status();
+        }
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["set-option", "-t", session_name, "window-size", "latest"])
+            .stderr(Stdio::null())
+            .status();
+        Ok(())
+    }
+
     /// Build a `tmux attach-session` command for the given session.
     ///
     /// The returned [`Command`] inherits the parent's stdio (required for an
@@ -248,6 +279,14 @@ impl TmuxManager {
             .status();
 
         self.hide_status_bar();
+
+        // Alt+z → detach: makes the fullscreen "zoom" (Alt+z) a symmetric
+        // toggle — the same key that enters fullscreen exits it. Best-effort.
+        let _ = Command::new("tmux")
+            .args(["-L", &self.socket_name])
+            .args(["bind-key", "-n", "M-z", "detach-client"])
+            .stderr(Stdio::null())
+            .status();
 
         // Ctrl+Q → detach (consistent way to return to Nexus TUI)
         let status = Command::new("tmux")
@@ -829,6 +868,14 @@ session-c:win3:0:\n";
         assert!(mgr.attach_command("session.name").is_err());
         assert!(mgr.attach_command("sess;rm -rf /").is_err());
         assert!(mgr.attach_command("").is_err());
+    }
+
+    #[test]
+    fn test_prepare_for_attach_validates_target() {
+        let mgr = TmuxManager::new("nexus-test");
+        // Rejects invalid targets before issuing any tmux commands.
+        assert!(mgr.prepare_for_attach("bad.name").is_err());
+        assert!(mgr.prepare_for_attach("sess;rm -rf /").is_err());
     }
 
     #[test]

@@ -1789,9 +1789,9 @@ impl App {
             }
         };
 
-        // Ensure the status bar is off even if the server was started before
-        // configure_server began hiding it (i.e. an upgrade mid-session).
-        self.tmux.hide_status_bar();
+        // Ensure a chrome-free, full-size attach with working detach binds even
+        // if the server was started before these settings existed.
+        let _ = self.tmux.prepare_for_attach(&tmux_name);
 
         let result = with_suspended_tui(|| cmd.status());
         self.needs_full_redraw = true;
