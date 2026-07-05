@@ -855,7 +855,7 @@ session-c:win3:0:\n";
 
     #[test]
     fn test_validate_target_rejects_injection() {
-        assert!(TmuxManager::validate_target("sess;rm -rf /").is_err());
+        assert!(TmuxManager::validate_target("sess;bad").is_err());
         assert!(TmuxManager::validate_target("sess:window").is_err());
     }
 
@@ -866,7 +866,7 @@ session-c:win3:0:\n";
         // (same validation as every other target-taking method).
         assert!(mgr.attach_command("good-name").is_ok());
         assert!(mgr.attach_command("session.name").is_err());
-        assert!(mgr.attach_command("sess;rm -rf /").is_err());
+        assert!(mgr.attach_command("sess;bad").is_err());
         assert!(mgr.attach_command("").is_err());
     }
 
@@ -875,7 +875,7 @@ session-c:win3:0:\n";
         let mgr = TmuxManager::new("nexus-test");
         // Rejects invalid targets before issuing any tmux commands.
         assert!(mgr.prepare_for_attach("bad.name").is_err());
-        assert!(mgr.prepare_for_attach("sess;rm -rf /").is_err());
+        assert!(mgr.prepare_for_attach("sess;bad").is_err());
     }
 
     #[test]
