@@ -113,6 +113,7 @@ pub fn mock_tree() -> Vec<TreeNode> {
     ]
 }
 
+#[expect(dead_code)]
 pub fn mock_tmux_sessions() -> Vec<TmuxSessionInfo> {
     vec![
         TmuxSessionInfo {
