@@ -17,6 +17,8 @@ pub type GroupId = i64;
 pub enum SessionAgent {
     Claude,
     Codex,
+    #[value(skip)]
+    Unknown,
 }
 
 impl SessionAgent {
@@ -24,13 +26,15 @@ impl SessionAgent {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Unknown => "unknown",
         }
     }
 
     pub fn from_str(value: &str) -> Self {
         match value {
             "codex" => Self::Codex,
-            _ => Self::Claude,
+            "claude" => Self::Claude,
+            _ => Self::Unknown,
         }
     }
 }

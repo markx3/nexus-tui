@@ -117,6 +117,9 @@ impl TmuxManager {
                     }
                 }
             }
+            SessionAgent::Unknown => {
+                bail!("cannot launch a session with an unknown coding agent");
+            }
         }
 
         let status = cmd

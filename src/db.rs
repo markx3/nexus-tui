@@ -680,6 +680,21 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_agent_is_not_downgraded_to_claude() {
+        let db = Database::open_in_memory().unwrap();
+        let id = create_session(&db, "future-agent", "/tmp/project", "future-agent");
+        db.conn
+            .execute(
+                "UPDATE sessions SET agent = 'future-agent' WHERE session_id = ?1",
+                params![id],
+            )
+            .unwrap();
+
+        let sessions = db.ungrouped_session_summaries(true).unwrap();
+        assert_eq!(sessions[0].agent, SessionAgent::Unknown);
+    }
+
+    #[test]
     fn test_update_session_status() {
         let db = Database::open_in_memory().unwrap();
         let id = create_session(&db, "test", "/tmp", "test");

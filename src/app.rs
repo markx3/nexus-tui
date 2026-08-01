@@ -1785,6 +1785,7 @@ impl App {
                     SessionAgent::Claude | SessionAgent::Codex => {
                         session.agent_session_id.as_deref()
                     }
+                    SessionAgent::Unknown => None,
                 };
 
                 // Snapshot before a fresh launch so we can identify its session file.
@@ -2007,6 +2008,7 @@ impl App {
             let detected = match agent {
                 SessionAgent::Claude => detect_claude_session_id(cwd, snapshot),
                 SessionAgent::Codex => detect_codex_session_id(cwd, snapshot),
+                SessionAgent::Unknown => None,
             };
             if let Some(agent_id) = detected {
                 let _ = self.db.set_agent_session_id(session_id, &agent_id);
@@ -2095,6 +2097,7 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, Session
             TreeNode::Session(s) => {
                 let missing_id = match s.agent {
                     SessionAgent::Claude | SessionAgent::Codex => s.agent_session_id.is_none(),
+                    SessionAgent::Unknown => false,
                 };
                 if missing_id && s.status != SessionStatus::Dead {
                     if let Some(cwd) = &s.cwd {
@@ -2118,6 +2121,7 @@ fn snapshot_agent_session_ids(agent: SessionAgent, cwd: &str) -> HashSet<String>
     match agent {
         SessionAgent::Claude => snapshot_jsonl_stems(cwd),
         SessionAgent::Codex => codex_sessions(cwd).into_iter().map(|(id, _)| id).collect(),
+        SessionAgent::Unknown => HashSet::new(),
     }
 }
 
