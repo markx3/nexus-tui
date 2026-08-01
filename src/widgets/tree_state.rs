@@ -299,15 +299,15 @@ impl TreeState {
                             expanded.insert(g.id);
                             return true;
                         }
-                        TreeNode::Group(_) => {
+                        TreeNode::Group(_)
                             if Self::expand_parent_of(
                                 session_id,
                                 std::slice::from_ref(child),
                                 expanded,
-                            ) {
-                                expanded.insert(g.id);
-                                return true;
-                            }
+                            ) =>
+                        {
+                            expanded.insert(g.id);
+                            return true;
                         }
                         _ => {}
                     }

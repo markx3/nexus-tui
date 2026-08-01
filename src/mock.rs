@@ -20,7 +20,8 @@ pub fn mock_tree() -> Vec<TreeNode> {
                     tmux_name: Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()),
                     created_by: SessionOrigin::Nexus,
                     created_at: "2026-02-28T10:00:00Z".to_string(),
-                    claude_session_id: None,
+                    agent_session_id: None,
+                    agent: SessionAgent::Claude,
                     worktree: None,
                     jsonl_path: None,
                 }),
@@ -34,7 +35,8 @@ pub fn mock_tree() -> Vec<TreeNode> {
                     tmux_name: Some("b2c3d4e5-f6a7-8901-bcde-f12345678901".to_string()),
                     created_by: SessionOrigin::Nexus,
                     created_at: "2026-02-27T08:00:00Z".to_string(),
-                    claude_session_id: None,
+                    agent_session_id: None,
+                    agent: SessionAgent::Claude,
                     worktree: None,
                     jsonl_path: None,
                 }),
@@ -56,7 +58,8 @@ pub fn mock_tree() -> Vec<TreeNode> {
                     tmux_name: Some("c3d4e5f6-a7b8-9012-cdef-123456789012".to_string()),
                     created_by: SessionOrigin::Nexus,
                     created_at: "2026-02-28T12:00:00Z".to_string(),
-                    claude_session_id: None,
+                    agent_session_id: None,
+                    agent: SessionAgent::Claude,
                     worktree: None,
                     jsonl_path: None,
                 }),
@@ -75,7 +78,8 @@ pub fn mock_tree() -> Vec<TreeNode> {
                         tmux_name: None,
                         created_by: SessionOrigin::Scanner,
                         created_at: "2026-02-25T10:00:00Z".to_string(),
-                        claude_session_id: None,
+                        agent_session_id: None,
+                        agent: SessionAgent::Claude,
                         worktree: None,
                         jsonl_path: None,
                     })],
@@ -97,7 +101,8 @@ pub fn mock_tree() -> Vec<TreeNode> {
                 tmux_name: None,
                 created_by: SessionOrigin::Scanner,
                 created_at: "2026-02-20T08:00:00Z".to_string(),
-                claude_session_id: None,
+                agent_session_id: None,
+                agent: SessionAgent::Claude,
                 worktree: None,
                 jsonl_path: None,
             }]
@@ -108,6 +113,7 @@ pub fn mock_tree() -> Vec<TreeNode> {
     ]
 }
 
+#[expect(dead_code)]
 pub fn mock_tmux_sessions() -> Vec<TmuxSessionInfo> {
     vec![
         TmuxSessionInfo {

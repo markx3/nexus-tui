@@ -72,6 +72,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             cwd,
             group,
             worktree,
+            agent,
         } => {
             let _lock = acquire_lock()?;
             let tmux = tmux::TmuxManager::new(&config.tmux.socket_name);
@@ -119,7 +120,8 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 None => (cwd.as_str(), None),
             };
 
-            let id = db.create_nexus_session(&name, session_cwd, &tmux_name, wt_ref)?;
+            let id =
+                db.create_nexus_session_with_agent(&name, session_cwd, &tmux_name, wt_ref, agent)?;
 
             if let Some(group_name) = group {
                 let gid = match db.get_group_id_by_name(&group_name)? {
@@ -130,7 +132,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
 
             if tmux.is_available() {
-                tmux.launch_claude_session(&tmux_name, session_cwd, None)?;
+                tmux.launch_agent_session(&tmux_name, session_cwd, agent, None)?;
             }
             println!("Created session '{}' ({})", name, id);
         }
@@ -145,9 +147,12 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 .ok_or_else(|| color_eyre::eyre::eyre!("Session '{}' has no cwd", session_id))?;
             let name = sanitize_tmux_name(&session_id);
             let tree = db.get_visible_tree(true)?;
-            let resume_id =
-                find_session_in_tree(&tree, &session_id).and_then(|s| s.claude_session_id.clone());
-            tmux.launch_claude_session(&name, &cwd, resume_id.as_deref())?;
+            let session = find_session_in_tree(&tree, &session_id);
+            let agent = session
+                .map(|s| s.agent)
+                .unwrap_or(types::SessionAgent::Claude);
+            let resume_id = session.and_then(|s| s.agent_session_id.clone());
+            tmux.launch_agent_session(&name, &cwd, agent, resume_id.as_deref())?;
             db.update_session_status(&session_id, types::SessionStatus::Active)?;
             println!("Launched session '{}'", session_id);
         }
@@ -411,6 +416,7 @@ fn print_session_detail(s: &types::SessionSummary) {
     }
     println!("Status:  {}", s.status.as_str());
     println!("Origin:  {}", s.created_by.as_str());
+    println!("Agent:   {}", s.agent.as_str());
     if let Some(ref tmux) = s.tmux_name {
         println!("Tmux:    {}", tmux);
     }

@@ -12,6 +12,33 @@ pub struct WorktreeInfo {
 pub type SessionId = String;
 pub type GroupId = i64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionAgent {
+    Claude,
+    Codex,
+    #[value(skip)]
+    Unknown,
+}
+
+impl SessionAgent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "codex" => Self::Codex,
+            "claude" => Self::Claude,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectionTarget {
     Session(SessionId),
@@ -127,6 +154,12 @@ pub enum InputContext {
         cwd: String,
         repo_root: Option<PathBuf>,
     },
+    NewSessionAgent {
+        name: String,
+        cwd: String,
+        group_id: Option<GroupId>,
+        repo_root: Option<PathBuf>,
+    },
 }
 
 /// Nexus commands triggered by Alt+key in the interactor.
@@ -174,7 +207,8 @@ pub struct SessionSummary {
     pub tmux_name: Option<String>,
     pub created_by: SessionOrigin,
     pub created_at: String,
-    pub claude_session_id: Option<String>,
+    pub agent_session_id: Option<String>,
+    pub agent: SessionAgent,
     pub worktree: Option<WorktreeInfo>,
     #[serde(skip)]
     pub jsonl_path: Option<PathBuf>,

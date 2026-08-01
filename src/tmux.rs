@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use color_eyre::eyre::{bail, WrapErr};
 use color_eyre::Result;
 
-use crate::types::{CursorPos, TmuxSessionInfo, TmuxSessionStatus};
+use crate::types::{CursorPos, SessionAgent, TmuxSessionInfo, TmuxSessionStatus};
 
 // ---------------------------------------------------------------------------
 // SendKeysArgs — type-safe tmux send-keys arguments
@@ -18,6 +18,37 @@ pub enum SendKeysArgs {
     /// Named tmux key — compile-time constant from match arms on KeyCode.
     /// Injection-safe because values are &'static str from the key_event_to_send_args match.
     Named(&'static str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AgentCommand {
+    program: &'static str,
+    args: Vec<String>,
+}
+
+fn agent_command(agent: SessionAgent, resume_id: Option<&str>) -> Result<AgentCommand> {
+    match agent {
+        SessionAgent::Claude => {
+            let mut args = vec!["--allow-dangerously-skip-permissions".to_string()];
+            if let Some(id) = resume_id {
+                args.extend(["--resume".to_string(), id.to_string()]);
+            }
+            Ok(AgentCommand {
+                program: "claude",
+                args,
+            })
+        }
+        SessionAgent::Codex => {
+            let args = resume_id
+                .map(|id| vec!["resume".to_string(), id.to_string()])
+                .unwrap_or_default();
+            Ok(AgentCommand {
+                program: "codex",
+                args,
+            })
+        }
+        SessionAgent::Unknown => bail!("cannot launch a session with an unknown coding agent"),
+    }
 }
 
 /// Escape literal text for `tmux send-keys -l`.
@@ -73,31 +104,30 @@ impl TmuxManager {
     /// Always passes `--allow-dangerously-skip-permissions` so the session's
     /// "bypass permissions" mode is selectable from inside Claude Code. This
     /// only makes the mode available; it does not enable it automatically.
+    #[cfg(test)]
     pub fn launch_claude_session(
         &self,
         name: &str,
         cwd: &str,
         resume_id: Option<&str>,
     ) -> Result<()> {
-        Self::validate_target(name)?;
-        let mut cmd = Command::new("tmux");
-        cmd.args(["-L", &self.socket_name]).args([
-            "new-session",
-            "-d",
-            "-s",
-            name,
-            "-c",
-            cwd,
-            "claude",
-            // Make "bypass permissions" mode selectable inside the session
-            // (via Shift+Tab) without forcing it on. This only enables the
-            // option; it does not skip permission checks by itself.
-            "--allow-dangerously-skip-permissions",
-        ]);
+        self.launch_agent_session(name, cwd, SessionAgent::Claude, resume_id)
+    }
 
-        if let Some(id) = resume_id {
-            cmd.args(["--resume", id]);
-        }
+    pub fn launch_agent_session(
+        &self,
+        name: &str,
+        cwd: &str,
+        agent: SessionAgent,
+        resume_id: Option<&str>,
+    ) -> Result<()> {
+        Self::validate_target(name)?;
+        let agent_cmd = agent_command(agent, resume_id)?;
+        let mut cmd = Command::new("tmux");
+        cmd.args(["-L", &self.socket_name])
+            .args(["new-session", "-d", "-s", name, "-c", cwd])
+            .arg(agent_cmd.program)
+            .args(agent_cmd.args);
 
         let status = cmd
             .stderr(Stdio::null())
@@ -106,7 +136,8 @@ impl TmuxManager {
 
         if !status.success() {
             bail!(
-                "tmux new-session (claude) exited with status {} for session '{}'",
+                "tmux new-session ({}) exited with status {} for session '{}'",
+                agent.as_str(),
                 status,
                 name
             );
@@ -979,6 +1010,60 @@ session-c:win3:0:\n";
         assert_ne!(lit, named);
         assert_eq!(lit, SendKeysArgs::Literal("hello".to_string()));
         assert_eq!(named, SendKeysArgs::Named("Enter"));
+    }
+
+    #[test]
+    fn test_agent_command_fresh_claude() {
+        assert_eq!(
+            agent_command(SessionAgent::Claude, None).unwrap(),
+            AgentCommand {
+                program: "claude",
+                args: vec!["--allow-dangerously-skip-permissions".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn test_agent_command_resumed_claude() {
+        assert_eq!(
+            agent_command(SessionAgent::Claude, Some("claude-id")).unwrap(),
+            AgentCommand {
+                program: "claude",
+                args: vec![
+                    "--allow-dangerously-skip-permissions".to_string(),
+                    "--resume".to_string(),
+                    "claude-id".to_string(),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn test_agent_command_fresh_codex() {
+        assert_eq!(
+            agent_command(SessionAgent::Codex, None).unwrap(),
+            AgentCommand {
+                program: "codex",
+                args: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_agent_command_resumed_codex() {
+        assert_eq!(
+            agent_command(SessionAgent::Codex, Some("codex-id")).unwrap(),
+            AgentCommand {
+                program: "codex",
+                args: vec!["resume".to_string(), "codex-id".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn test_agent_command_rejects_unknown_agent() {
+        let error = agent_command(SessionAgent::Unknown, None).unwrap_err();
+        assert!(error.to_string().contains("unknown coding agent"));
     }
 
     #[test]

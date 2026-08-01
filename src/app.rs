@@ -148,6 +148,7 @@ struct PendingWorktreeCtx {
     repo_root: PathBuf,
     branch: String,
     group_id: Option<GroupId>,
+    agent: SessionAgent,
 }
 
 /// Bundled state for a background worktree teardown.
@@ -344,7 +345,7 @@ impl App {
             {
                 self.tmux_sessions = self.tmux.list_sessions().unwrap_or_default();
                 self.reconcile_tmux_state();
-                self.detect_claude_session_ids();
+                self.detect_agent_session_ids();
                 self.last_tmux_poll = now;
                 self.dirty = true;
             }
@@ -759,12 +760,10 @@ impl App {
             }
 
             let node_height = match &fnode.node {
-                FlatNodeKind::Session { summary } if summary.worktree.is_some() => {
-                    if display_row + 1 < content_slots {
-                        2
-                    } else {
-                        1
-                    }
+                FlatNodeKind::Session { summary }
+                    if summary.worktree.is_some() && display_row + 1 < content_slots =>
+                {
+                    2
                 }
                 _ => 1,
             };
@@ -1089,11 +1088,26 @@ impl App {
                 });
             }
             _ => {
-                self.create_session_maybe_worktree(&name, &cwd, None, repo_root);
-                self.input_mode = InputMode::Normal;
-                self.input_buffer.clear();
+                self.prompt_for_agent(name, cwd, None, repo_root);
             }
         }
+    }
+
+    fn prompt_for_agent(
+        &mut self,
+        name: String,
+        cwd: String,
+        group_id: Option<GroupId>,
+        repo_root: Option<PathBuf>,
+    ) {
+        self.input_mode = InputMode::Confirm;
+        self.input_context = Some(InputContext::NewSessionAgent {
+            name,
+            cwd,
+            group_id,
+            repo_root,
+        });
+        self.input_buffer.clear();
     }
 
     // -----------------------------------------------------------------------
@@ -1101,6 +1115,34 @@ impl App {
     // -----------------------------------------------------------------------
 
     fn handle_confirm_key(&mut self, key: KeyEvent) {
+        if matches!(
+            self.input_context,
+            Some(InputContext::NewSessionAgent { .. })
+        ) {
+            let agent = match key.code {
+                KeyCode::Char('c') | KeyCode::Char('C') => Some(SessionAgent::Claude),
+                KeyCode::Char('x') | KeyCode::Char('X') => Some(SessionAgent::Codex),
+                KeyCode::Esc => {
+                    self.input_mode = InputMode::Normal;
+                    self.input_context = None;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(agent) = agent {
+                if let Some(InputContext::NewSessionAgent {
+                    name,
+                    cwd,
+                    group_id,
+                    repo_root,
+                }) = self.input_context.take()
+                {
+                    self.input_mode = InputMode::Normal;
+                    self.create_session_maybe_worktree(&name, &cwd, group_id, repo_root, agent);
+                }
+            }
+            return;
+        }
         // Worktree confirm: y = with worktree, n = without worktree, Esc = cancel
         if matches!(
             self.input_context,
@@ -1286,14 +1328,19 @@ impl App {
                     }) => {
                         // gid 0 is the "Ungrouped" sentinel
                         let group = gid.filter(|&id| id != 0);
-                        self.create_session_maybe_worktree(&name, &cwd, group, repo_root);
+                        self.prompt_for_agent(name, cwd, group, repo_root);
                     }
                     other => {
                         self.input_context = other;
                     }
                 }
-                self.input_mode = InputMode::Normal;
-                self.input_context = None;
+                if !matches!(
+                    self.input_context,
+                    Some(InputContext::NewSessionAgent { .. })
+                ) {
+                    self.input_mode = InputMode::Normal;
+                    self.input_context = None;
+                }
                 self.picker_groups.clear();
                 self.refresh_tree();
             }
@@ -1492,8 +1539,14 @@ impl App {
     // Session creation + launch
     // -----------------------------------------------------------------------
 
-    fn create_session(&mut self, name: &str, cwd: &str, group_id: Option<GroupId>) {
-        self.finalize_session_creation(name, cwd, group_id, None);
+    fn create_session(
+        &mut self,
+        name: &str,
+        cwd: &str,
+        group_id: Option<GroupId>,
+        agent: SessionAgent,
+    ) {
+        self.finalize_session_creation(name, cwd, group_id, None, agent);
     }
 
     /// Shared session creation logic for both plain and worktree sessions.
@@ -1503,16 +1556,17 @@ impl App {
         cwd: &str,
         group_id: Option<GroupId>,
         worktree: Option<&WorktreeInfo>,
+        agent: SessionAgent,
     ) {
         let tmux_name = sanitize_tmux_name(name);
         let tmux_name = self
             .db
             .next_unique_tmux_name(&tmux_name, None)
             .unwrap_or(tmux_name);
-        let snapshot = snapshot_jsonl_stems(cwd);
+        let snapshot = snapshot_agent_session_ids(agent, cwd);
         match self
             .db
-            .create_nexus_session(name, cwd, &tmux_name, worktree)
+            .create_nexus_session_with_agent(name, cwd, &tmux_name, worktree, agent)
         {
             Ok(id) => {
                 self.jsonl_snapshots.insert(id.clone(), snapshot);
@@ -1523,7 +1577,7 @@ impl App {
                     }
                 }
                 if self.tmux_available {
-                    if let Err(e) = self.tmux.launch_claude_session(&tmux_name, cwd, None) {
+                    if let Err(e) = self.tmux.launch_agent_session(&tmux_name, cwd, agent, None) {
                         self.status_message =
                             Some((format!("tmux launch failed: {e}"), Instant::now()));
                         self.refresh_tree();
@@ -1551,11 +1605,12 @@ impl App {
         cwd: &str,
         group_id: Option<GroupId>,
         repo_root: Option<PathBuf>,
+        agent: SessionAgent,
     ) {
         let repo_root = match repo_root {
             Some(r) => r,
             None => {
-                self.create_session(name, cwd, group_id);
+                self.create_session(name, cwd, group_id, agent);
                 return;
             }
         };
@@ -1621,6 +1676,7 @@ impl App {
                 repo_root,
                 branch,
                 group_id,
+                agent,
             },
         });
     }
@@ -1645,7 +1701,13 @@ impl App {
                     repo_root: ctx.repo_root,
                 };
                 self.status_message = Some(("Worktree created".to_string(), Instant::now()));
-                self.finalize_session_creation(&ctx.name, &ctx.cwd, ctx.group_id, Some(&wt_info));
+                self.finalize_session_creation(
+                    &ctx.name,
+                    &ctx.cwd,
+                    ctx.group_id,
+                    Some(&wt_info),
+                    ctx.agent,
+                );
             }
             Err(e) => {
                 self.status_message = Some((format!("worktree failed: {e}"), Instant::now()));
@@ -1716,17 +1778,25 @@ impl App {
                     None => sanitize_tmux_name(&session.session_id),
                 };
 
-                // Snapshot before fresh launch so we can detect the new JSONL
-                if session.claude_session_id.is_none() {
-                    self.jsonl_snapshots
-                        .insert(session.session_id.clone(), snapshot_jsonl_stems(&cwd));
+                let resume_id = match session.agent {
+                    SessionAgent::Claude | SessionAgent::Codex => {
+                        session.agent_session_id.as_deref()
+                    }
+                    SessionAgent::Unknown => None,
+                };
+
+                // Snapshot before a fresh launch so we can identify its session file.
+                if resume_id.is_none() {
+                    self.jsonl_snapshots.insert(
+                        session.session_id.clone(),
+                        snapshot_agent_session_ids(session.agent, &cwd),
+                    );
                 }
 
-                if let Err(e) = self.tmux.launch_claude_session(
-                    &tmux_name,
-                    &cwd,
-                    session.claude_session_id.as_deref(),
-                ) {
+                if let Err(e) =
+                    self.tmux
+                        .launch_agent_session(&tmux_name, &cwd, session.agent, resume_id)
+                {
                     self.status_message =
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
                     return;
@@ -1917,20 +1987,25 @@ impl App {
         }
     }
 
-    /// Scan active sessions that lack a `claude_session_id` and attempt to
-    /// detect it from `~/.claude/projects/<project_dir>/`.
-    fn detect_claude_session_ids(&mut self) {
-        let needs_detection: Vec<(String, String)> = collect_sessions_needing_detection(&self.tree);
+    /// Scan active sessions that lack their agent's session ID and detect it
+    /// from the agent's local JSONL session store.
+    fn detect_agent_session_ids(&mut self) {
+        let needs_detection = collect_sessions_needing_detection(&self.tree);
 
         if needs_detection.is_empty() {
             return;
         }
 
         let mut found_any = false;
-        for (session_id, cwd) in &needs_detection {
+        for (session_id, agent, cwd) in &needs_detection {
             let snapshot = self.jsonl_snapshots.get(session_id);
-            if let Some(claude_id) = detect_claude_session_id(cwd, snapshot) {
-                let _ = self.db.set_claude_session_id(session_id, &claude_id);
+            let detected = match agent {
+                SessionAgent::Claude => detect_claude_session_id(cwd, snapshot),
+                SessionAgent::Codex => detect_codex_session_id(cwd, snapshot),
+                SessionAgent::Unknown => None,
+            };
+            if let Some(agent_id) = detected {
+                let _ = self.db.set_agent_session_id(session_id, &agent_id);
                 self.jsonl_snapshots.remove(session_id);
                 found_any = true;
             }
@@ -2008,15 +2083,23 @@ fn interactor_inner_size(term_cols: u16, term_rows: u16, tree_pct: u16) -> (u16,
     (inner_cols, inner_rows)
 }
 
-/// Collect `(session_id, cwd)` pairs for active sessions that lack a Claude session ID.
-fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)> {
+/// Collect active sessions that lack the selected agent's session ID.
+fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, SessionAgent, String)> {
     let mut result = Vec::new();
     for node in tree {
         match node {
             TreeNode::Session(s) => {
-                if s.claude_session_id.is_none() && s.status != SessionStatus::Dead {
+                let missing_id = match s.agent {
+                    SessionAgent::Claude | SessionAgent::Codex => s.agent_session_id.is_none(),
+                    SessionAgent::Unknown => false,
+                };
+                if missing_id && s.status != SessionStatus::Dead {
                     if let Some(cwd) = &s.cwd {
-                        result.push((s.session_id.clone(), cwd.to_string_lossy().to_string()));
+                        result.push((
+                            s.session_id.clone(),
+                            s.agent,
+                            cwd.to_string_lossy().to_string(),
+                        ));
                     }
                 }
             }
@@ -2026,6 +2109,77 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)
         }
     }
     result
+}
+
+fn snapshot_agent_session_ids(agent: SessionAgent, cwd: &str) -> HashSet<String> {
+    match agent {
+        SessionAgent::Claude => snapshot_jsonl_stems(cwd),
+        SessionAgent::Codex => codex_sessions(cwd).into_iter().map(|(id, _)| id).collect(),
+        SessionAgent::Unknown => HashSet::new(),
+    }
+}
+
+/// Return Codex session IDs for `cwd`, newest first.
+fn codex_sessions(cwd: &str) -> Vec<(String, std::time::SystemTime)> {
+    use std::io::BufRead;
+
+    let Some(root) = dirs::home_dir().map(|home| home.join(".codex/sessions")) else {
+        return Vec::new();
+    };
+    let mut pending = vec![root];
+    let mut sessions = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let Some(Ok(first_line)) = std::io::BufReader::new(file).lines().next() else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&first_line) else {
+                continue;
+            };
+            let payload = &value["payload"];
+            if payload["cwd"].as_str() != Some(cwd) {
+                continue;
+            }
+            let Some(id) = payload["id"]
+                .as_str()
+                .or_else(|| payload["session_id"].as_str())
+            else {
+                continue;
+            };
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            sessions.push((id.to_string(), modified));
+        }
+    }
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.1));
+    sessions
+}
+
+fn detect_codex_session_id(cwd: &str, pre_launch: Option<&HashSet<String>>) -> Option<String> {
+    let sessions = codex_sessions(cwd);
+    match pre_launch {
+        Some(snapshot) => sessions
+            .into_iter()
+            .find(|(id, _)| !snapshot.contains(id))
+            .map(|(id, _)| id),
+        None => sessions.into_iter().next().map(|(id, _)| id),
+    }
 }
 
 /// Snapshot the set of `.jsonl` file stems in a project's Claude directory.

@@ -1,12 +1,12 @@
 # Nexus
 
-TUI session manager for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+TUI session manager for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex](https://developers.openai.com/codex/cli/).
 
 ![CI](https://github.com/markx3/nexus-tui/actions/workflows/ci.yml/badge.svg)
 
 ![screenshot](assets/screenshot.png)
 
-Nexus gives you a persistent, organized workspace for managing multiple Claude Code sessions. It wraps each session in a tmux pane with a live terminal preview, groups sessions by project, and lets you switch between them instantly — all in a single terminal window.
+Nexus gives you a persistent, organized workspace for managing multiple coding-agent sessions. It wraps each session in a tmux pane with a live terminal preview, groups sessions by project, and lets you switch between them instantly — all in a single terminal window.
 
 ## Features
 
@@ -14,6 +14,7 @@ Nexus gives you a persistent, organized workspace for managing multiple Claude C
 - **Session grouping** — organize sessions by project via config or on-the-fly
 - **8 color themes** — cycle with `Alt+t`, persisted across restarts
 - **Session lifecycle** — create, rename, move, delete, and kill sessions from the TUI or CLI
+- **Claude or Codex** — choose which coding agent to run for each new session
 - **Worktree isolation** — optionally create a dedicated git worktree per session for branch-level isolation
 - **Claude session resume** — automatically detects Claude Code session IDs so relaunched sessions resume where they left off
 - **Bypass permissions ready** — sessions launch with `--allow-dangerously-skip-permissions`, so you can select "bypass permissions" mode from inside Claude Code (Shift+Tab) when you want it; it is not enabled automatically
@@ -96,6 +97,7 @@ nexus show <id>                      # Show session details (ID prefix supported
 nexus new <name>                     # Create and launch a new session
 nexus new <name> -c /path -g mygroup # With cwd and group
 nexus new <name> -w                  # Create with an isolated git worktree
+nexus new <name> --agent codex      # Create and launch a Codex session
 nexus launch <id>                    # Launch/resume a session in tmux
 nexus kill <name>                    # Kill a running tmux session
 nexus groups                         # List configured groups
