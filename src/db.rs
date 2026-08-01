@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at    TEXT NOT NULL DEFAULT '',
     worktree_branch    TEXT,
     worktree_repo_root TEXT,
-    agent              TEXT NOT NULL DEFAULT 'claude'
+    agent              TEXT NOT NULL DEFAULT 'claude',
+    agent_session_id   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -109,6 +110,7 @@ impl Database {
             "ALTER TABLE sessions ADD COLUMN worktree_branch TEXT",
             "ALTER TABLE sessions ADD COLUMN worktree_repo_root TEXT",
             "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+            "ALTER TABLE sessions ADD COLUMN agent_session_id TEXT",
         ];
         for sql in &additions {
             match self.conn.execute_batch(sql) {
@@ -231,11 +233,11 @@ impl Database {
         Ok(())
     }
 
-    /// Store the Claude Code session ID for a Nexus session.
-    pub fn set_claude_session_id(&self, session_id: &str, claude_id: &str) -> Result<()> {
+    /// Store the selected coding agent's session ID for a Nexus session.
+    pub fn set_agent_session_id(&self, session_id: &str, agent_id: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE sessions SET claude_session_id = ?1 WHERE session_id = ?2",
-            params![claude_id, session_id],
+            "UPDATE sessions SET agent_session_id = ?1 WHERE session_id = ?2",
+            params![agent_id, session_id],
         )?;
         Ok(())
     }
@@ -357,7 +359,7 @@ impl Database {
             "SELECT sg.group_id, s.session_id, s.display_name, s.cwd,
                     s.last_active, s.is_active,
                     s.tmux_name, s.status, s.created_by, s.created_at,
-                    s.claude_session_id,
+                    COALESCE(s.agent_session_id, s.claude_session_id),
                     s.agent, s.worktree_branch, s.worktree_repo_root
              FROM sessions s
              JOIN session_groups sg ON s.session_id = sg.session_id
@@ -536,7 +538,7 @@ impl Database {
             "SELECT s.session_id, s.display_name, s.cwd,
                     s.last_active, s.is_active,
                     s.tmux_name, s.status, s.created_by, s.created_at,
-                    s.claude_session_id,
+                    COALESCE(s.agent_session_id, s.claude_session_id),
                     s.agent, s.worktree_branch, s.worktree_repo_root
              FROM sessions s
              WHERE s.session_id NOT IN (SELECT session_id FROM session_groups)
@@ -588,12 +590,12 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> SessionSummary {
     row_to_summary_at(row, 0)
 }
 
-/// Map a rusqlite Row into a `SessionSummary`, reading 12 columns starting at
+/// Map a rusqlite Row into a `SessionSummary`, reading 13 columns starting at
 /// the given `start` offset.
 ///
 /// Column layout (relative to `start`):
 ///   0: session_id, 1: display_name, 2: cwd, 3: last_active, 4: is_active,
-///   5: tmux_name, 6: status, 7: created_by, 8: created_at, 9: claude_session_id,
+///   5: tmux_name, 6: status, 7: created_by, 8: created_at, 9: agent_session_id,
 ///   10: agent, 11: worktree_branch, 12: worktree_repo_root
 fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
     let cwd_str: Option<String> = row.get(start + 2).unwrap_or(None);
@@ -622,7 +624,7 @@ fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
         status: SessionStatus::from_str(&status_str),
         created_by: SessionOrigin::from_str(&created_by_str),
         created_at: row.get(start + 8).unwrap_or_default(),
-        claude_session_id: row.get(start + 9).unwrap_or(None),
+        agent_session_id: row.get(start + 9).unwrap_or(None),
         agent: SessionAgent::from_str(&agent),
         worktree,
         jsonl_path: None,

@@ -203,7 +203,7 @@ pub struct SessionSummary {
     pub tmux_name: Option<String>,
     pub created_by: SessionOrigin,
     pub created_at: String,
-    pub claude_session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     pub agent: SessionAgent,
     pub worktree: Option<WorktreeInfo>,
     #[serde(skip)]

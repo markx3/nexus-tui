@@ -95,7 +95,7 @@ impl TmuxManager {
         cwd: &str,
         agent: SessionAgent,
         resume: bool,
-        claude_resume_id: Option<&str>,
+        resume_id: Option<&str>,
     ) -> Result<()> {
         Self::validate_target(name)?;
         let mut cmd = Command::new("tmux");
@@ -105,14 +105,16 @@ impl TmuxManager {
         match agent {
             SessionAgent::Claude => {
                 cmd.args(["claude", "--allow-dangerously-skip-permissions"]);
-                if let Some(id) = claude_resume_id {
+                if let Some(id) = resume_id {
                     cmd.args(["--resume", id]);
                 }
             }
             SessionAgent::Codex => {
                 cmd.arg("codex");
                 if resume {
-                    cmd.args(["resume", "--last"]);
+                    if let Some(id) = resume_id {
+                        cmd.args(["resume", id]);
+                    }
                 }
             }
         }

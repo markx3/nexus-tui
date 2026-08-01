@@ -148,11 +148,17 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             let name = sanitize_tmux_name(&session_id);
             let tree = db.get_visible_tree(true)?;
             let session = find_session_in_tree(&tree, &session_id);
-            let resume_id = session.and_then(|s| s.claude_session_id.clone());
             let agent = session
                 .map(|s| s.agent)
                 .unwrap_or(types::SessionAgent::Claude);
-            tmux.launch_agent_session(&name, &cwd, agent, true, resume_id.as_deref())?;
+            let resume_id = session.and_then(|s| s.agent_session_id.clone());
+            tmux.launch_agent_session(
+                &name,
+                &cwd,
+                agent,
+                resume_id.is_some(),
+                resume_id.as_deref(),
+            )?;
             db.update_session_status(&session_id, types::SessionStatus::Active)?;
             println!("Launched session '{}'", session_id);
         }

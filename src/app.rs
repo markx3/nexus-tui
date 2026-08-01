@@ -345,7 +345,7 @@ impl App {
             {
                 self.tmux_sessions = self.tmux.list_sessions().unwrap_or_default();
                 self.reconcile_tmux_state();
-                self.detect_claude_session_ids();
+                self.detect_agent_session_ids();
                 self.last_tmux_poll = now;
                 self.dirty = true;
             }
@@ -1563,7 +1563,7 @@ impl App {
             .db
             .next_unique_tmux_name(&tmux_name, None)
             .unwrap_or(tmux_name);
-        let snapshot = snapshot_jsonl_stems(cwd);
+        let snapshot = snapshot_agent_session_ids(agent, cwd);
         match self
             .db
             .create_nexus_session_with_agent(name, cwd, &tmux_name, worktree, agent)
@@ -1781,18 +1781,26 @@ impl App {
                     None => sanitize_tmux_name(&session.session_id),
                 };
 
-                // Snapshot before fresh launch so we can detect the new JSONL
-                if session.claude_session_id.is_none() {
-                    self.jsonl_snapshots
-                        .insert(session.session_id.clone(), snapshot_jsonl_stems(&cwd));
+                let resume_id = match session.agent {
+                    SessionAgent::Claude | SessionAgent::Codex => {
+                        session.agent_session_id.as_deref()
+                    }
+                };
+
+                // Snapshot before a fresh launch so we can identify its session file.
+                if resume_id.is_none() {
+                    self.jsonl_snapshots.insert(
+                        session.session_id.clone(),
+                        snapshot_agent_session_ids(session.agent, &cwd),
+                    );
                 }
 
                 if let Err(e) = self.tmux.launch_agent_session(
                     &tmux_name,
                     &cwd,
                     session.agent,
-                    true,
-                    session.claude_session_id.as_deref(),
+                    resume_id.is_some(),
+                    resume_id,
                 ) {
                     self.status_message =
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
@@ -1984,20 +1992,24 @@ impl App {
         }
     }
 
-    /// Scan active sessions that lack a `claude_session_id` and attempt to
-    /// detect it from `~/.claude/projects/<project_dir>/`.
-    fn detect_claude_session_ids(&mut self) {
-        let needs_detection: Vec<(String, String)> = collect_sessions_needing_detection(&self.tree);
+    /// Scan active sessions that lack their agent's session ID and detect it
+    /// from the agent's local JSONL session store.
+    fn detect_agent_session_ids(&mut self) {
+        let needs_detection = collect_sessions_needing_detection(&self.tree);
 
         if needs_detection.is_empty() {
             return;
         }
 
         let mut found_any = false;
-        for (session_id, cwd) in &needs_detection {
+        for (session_id, agent, cwd) in &needs_detection {
             let snapshot = self.jsonl_snapshots.get(session_id);
-            if let Some(claude_id) = detect_claude_session_id(cwd, snapshot) {
-                let _ = self.db.set_claude_session_id(session_id, &claude_id);
+            let detected = match agent {
+                SessionAgent::Claude => detect_claude_session_id(cwd, snapshot),
+                SessionAgent::Codex => detect_codex_session_id(cwd, snapshot),
+            };
+            if let Some(agent_id) = detected {
+                let _ = self.db.set_agent_session_id(session_id, &agent_id);
                 self.jsonl_snapshots.remove(session_id);
                 found_any = true;
             }
@@ -2075,18 +2087,22 @@ fn interactor_inner_size(term_cols: u16, term_rows: u16, tree_pct: u16) -> (u16,
     (inner_cols, inner_rows)
 }
 
-/// Collect `(session_id, cwd)` pairs for active sessions that lack a Claude session ID.
-fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)> {
+/// Collect active sessions that lack the selected agent's session ID.
+fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, SessionAgent, String)> {
     let mut result = Vec::new();
     for node in tree {
         match node {
             TreeNode::Session(s) => {
-                if s.agent == SessionAgent::Claude
-                    && s.claude_session_id.is_none()
-                    && s.status != SessionStatus::Dead
-                {
+                let missing_id = match s.agent {
+                    SessionAgent::Claude | SessionAgent::Codex => s.agent_session_id.is_none(),
+                };
+                if missing_id && s.status != SessionStatus::Dead {
                     if let Some(cwd) = &s.cwd {
-                        result.push((s.session_id.clone(), cwd.to_string_lossy().to_string()));
+                        result.push((
+                            s.session_id.clone(),
+                            s.agent,
+                            cwd.to_string_lossy().to_string(),
+                        ));
                     }
                 }
             }
@@ -2096,6 +2112,76 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)
         }
     }
     result
+}
+
+fn snapshot_agent_session_ids(agent: SessionAgent, cwd: &str) -> HashSet<String> {
+    match agent {
+        SessionAgent::Claude => snapshot_jsonl_stems(cwd),
+        SessionAgent::Codex => codex_sessions(cwd).into_iter().map(|(id, _)| id).collect(),
+    }
+}
+
+/// Return Codex session IDs for `cwd`, newest first.
+fn codex_sessions(cwd: &str) -> Vec<(String, std::time::SystemTime)> {
+    use std::io::BufRead;
+
+    let Some(root) = dirs::home_dir().map(|home| home.join(".codex/sessions")) else {
+        return Vec::new();
+    };
+    let mut pending = vec![root];
+    let mut sessions = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let Some(Ok(first_line)) = std::io::BufReader::new(file).lines().next() else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&first_line) else {
+                continue;
+            };
+            let payload = &value["payload"];
+            if payload["cwd"].as_str() != Some(cwd) {
+                continue;
+            }
+            let Some(id) = payload["id"]
+                .as_str()
+                .or_else(|| payload["session_id"].as_str())
+            else {
+                continue;
+            };
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            sessions.push((id.to_string(), modified));
+        }
+    }
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.1));
+    sessions
+}
+
+fn detect_codex_session_id(cwd: &str, pre_launch: Option<&HashSet<String>>) -> Option<String> {
+    let sessions = codex_sessions(cwd);
+    match pre_launch {
+        Some(snapshot) => sessions
+            .into_iter()
+            .find(|(id, _)| !snapshot.contains(id))
+            .map(|(id, _)| id),
+        None => sessions.into_iter().next().map(|(id, _)| id),
+    }
 }
 
 /// Snapshot the set of `.jsonl` file stems in a project's Claude directory.
