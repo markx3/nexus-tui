@@ -148,6 +148,7 @@ struct PendingWorktreeCtx {
     repo_root: PathBuf,
     branch: String,
     group_id: Option<GroupId>,
+    agent: SessionAgent,
 }
 
 /// Bundled state for a background worktree teardown.
@@ -759,12 +760,10 @@ impl App {
             }
 
             let node_height = match &fnode.node {
-                FlatNodeKind::Session { summary } if summary.worktree.is_some() => {
-                    if display_row + 1 < content_slots {
-                        2
-                    } else {
-                        1
-                    }
+                FlatNodeKind::Session { summary }
+                    if summary.worktree.is_some() && display_row + 1 < content_slots =>
+                {
+                    2
                 }
                 _ => 1,
             };
@@ -1089,11 +1088,26 @@ impl App {
                 });
             }
             _ => {
-                self.create_session_maybe_worktree(&name, &cwd, None, repo_root);
-                self.input_mode = InputMode::Normal;
-                self.input_buffer.clear();
+                self.prompt_for_agent(name, cwd, None, repo_root);
             }
         }
+    }
+
+    fn prompt_for_agent(
+        &mut self,
+        name: String,
+        cwd: String,
+        group_id: Option<GroupId>,
+        repo_root: Option<PathBuf>,
+    ) {
+        self.input_mode = InputMode::Confirm;
+        self.input_context = Some(InputContext::NewSessionAgent {
+            name,
+            cwd,
+            group_id,
+            repo_root,
+        });
+        self.input_buffer.clear();
     }
 
     // -----------------------------------------------------------------------
@@ -1101,6 +1115,34 @@ impl App {
     // -----------------------------------------------------------------------
 
     fn handle_confirm_key(&mut self, key: KeyEvent) {
+        if matches!(
+            self.input_context,
+            Some(InputContext::NewSessionAgent { .. })
+        ) {
+            let agent = match key.code {
+                KeyCode::Char('c') | KeyCode::Char('C') => Some(SessionAgent::Claude),
+                KeyCode::Char('x') | KeyCode::Char('X') => Some(SessionAgent::Codex),
+                KeyCode::Esc => {
+                    self.input_mode = InputMode::Normal;
+                    self.input_context = None;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(agent) = agent {
+                if let Some(InputContext::NewSessionAgent {
+                    name,
+                    cwd,
+                    group_id,
+                    repo_root,
+                }) = self.input_context.take()
+                {
+                    self.input_mode = InputMode::Normal;
+                    self.create_session_maybe_worktree(&name, &cwd, group_id, repo_root, agent);
+                }
+            }
+            return;
+        }
         // Worktree confirm: y = with worktree, n = without worktree, Esc = cancel
         if matches!(
             self.input_context,
@@ -1286,14 +1328,19 @@ impl App {
                     }) => {
                         // gid 0 is the "Ungrouped" sentinel
                         let group = gid.filter(|&id| id != 0);
-                        self.create_session_maybe_worktree(&name, &cwd, group, repo_root);
+                        self.prompt_for_agent(name, cwd, group, repo_root);
                     }
                     other => {
                         self.input_context = other;
                     }
                 }
-                self.input_mode = InputMode::Normal;
-                self.input_context = None;
+                if !matches!(
+                    self.input_context,
+                    Some(InputContext::NewSessionAgent { .. })
+                ) {
+                    self.input_mode = InputMode::Normal;
+                    self.input_context = None;
+                }
                 self.picker_groups.clear();
                 self.refresh_tree();
             }
@@ -1492,8 +1539,14 @@ impl App {
     // Session creation + launch
     // -----------------------------------------------------------------------
 
-    fn create_session(&mut self, name: &str, cwd: &str, group_id: Option<GroupId>) {
-        self.finalize_session_creation(name, cwd, group_id, None);
+    fn create_session(
+        &mut self,
+        name: &str,
+        cwd: &str,
+        group_id: Option<GroupId>,
+        agent: SessionAgent,
+    ) {
+        self.finalize_session_creation(name, cwd, group_id, None, agent);
     }
 
     /// Shared session creation logic for both plain and worktree sessions.
@@ -1503,6 +1556,7 @@ impl App {
         cwd: &str,
         group_id: Option<GroupId>,
         worktree: Option<&WorktreeInfo>,
+        agent: SessionAgent,
     ) {
         let tmux_name = sanitize_tmux_name(name);
         let tmux_name = self
@@ -1512,7 +1566,7 @@ impl App {
         let snapshot = snapshot_jsonl_stems(cwd);
         match self
             .db
-            .create_nexus_session(name, cwd, &tmux_name, worktree)
+            .create_nexus_session_with_agent(name, cwd, &tmux_name, worktree, agent)
         {
             Ok(id) => {
                 self.jsonl_snapshots.insert(id.clone(), snapshot);
@@ -1523,7 +1577,10 @@ impl App {
                     }
                 }
                 if self.tmux_available {
-                    if let Err(e) = self.tmux.launch_claude_session(&tmux_name, cwd, None) {
+                    if let Err(e) = self
+                        .tmux
+                        .launch_agent_session(&tmux_name, cwd, agent, false, None)
+                    {
                         self.status_message =
                             Some((format!("tmux launch failed: {e}"), Instant::now()));
                         self.refresh_tree();
@@ -1551,11 +1608,12 @@ impl App {
         cwd: &str,
         group_id: Option<GroupId>,
         repo_root: Option<PathBuf>,
+        agent: SessionAgent,
     ) {
         let repo_root = match repo_root {
             Some(r) => r,
             None => {
-                self.create_session(name, cwd, group_id);
+                self.create_session(name, cwd, group_id, agent);
                 return;
             }
         };
@@ -1621,6 +1679,7 @@ impl App {
                 repo_root,
                 branch,
                 group_id,
+                agent,
             },
         });
     }
@@ -1645,7 +1704,13 @@ impl App {
                     repo_root: ctx.repo_root,
                 };
                 self.status_message = Some(("Worktree created".to_string(), Instant::now()));
-                self.finalize_session_creation(&ctx.name, &ctx.cwd, ctx.group_id, Some(&wt_info));
+                self.finalize_session_creation(
+                    &ctx.name,
+                    &ctx.cwd,
+                    ctx.group_id,
+                    Some(&wt_info),
+                    ctx.agent,
+                );
             }
             Err(e) => {
                 self.status_message = Some((format!("worktree failed: {e}"), Instant::now()));
@@ -1722,9 +1787,11 @@ impl App {
                         .insert(session.session_id.clone(), snapshot_jsonl_stems(&cwd));
                 }
 
-                if let Err(e) = self.tmux.launch_claude_session(
+                if let Err(e) = self.tmux.launch_agent_session(
                     &tmux_name,
                     &cwd,
+                    session.agent,
+                    true,
                     session.claude_session_id.as_deref(),
                 ) {
                     self.status_message =
@@ -2014,7 +2081,10 @@ fn collect_sessions_needing_detection(tree: &[TreeNode]) -> Vec<(String, String)
     for node in tree {
         match node {
             TreeNode::Session(s) => {
-                if s.claude_session_id.is_none() && s.status != SessionStatus::Dead {
+                if s.agent == SessionAgent::Claude
+                    && s.claude_session_id.is_none()
+                    && s.status != SessionStatus::Dead
+                {
                     if let Some(cwd) = &s.cwd {
                         result.push((s.session_id.clone(), cwd.to_string_lossy().to_string()));
                     }

@@ -5,8 +5,8 @@ use color_eyre::Result;
 use rusqlite::{params, Connection};
 
 use crate::types::{
-    GroupIcon, GroupId, GroupNode, SessionOrigin, SessionStatus, SessionSummary, TreeNode,
-    WorktreeInfo,
+    GroupIcon, GroupId, GroupNode, SessionAgent, SessionOrigin, SessionStatus, SessionSummary,
+    TreeNode, WorktreeInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_by    TEXT NOT NULL DEFAULT 'scanner',
     created_at    TEXT NOT NULL DEFAULT '',
     worktree_branch    TEXT,
-    worktree_repo_root TEXT
+    worktree_repo_root TEXT,
+    agent              TEXT NOT NULL DEFAULT 'claude'
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -107,6 +108,7 @@ impl Database {
             "ALTER TABLE sessions ADD COLUMN claude_session_id TEXT",
             "ALTER TABLE sessions ADD COLUMN worktree_branch TEXT",
             "ALTER TABLE sessions ADD COLUMN worktree_repo_root TEXT",
+            "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
         ];
         for sql in &additions {
             match self.conn.execute_batch(sql) {
@@ -145,12 +147,24 @@ impl Database {
     // -----------------------------------------------------------------------
 
     /// Create a new Nexus-managed session and return its UUID.
+    #[cfg(test)]
     pub fn create_nexus_session(
         &self,
         name: &str,
         cwd: &str,
         tmux_name: &str,
         worktree: Option<&WorktreeInfo>,
+    ) -> Result<String> {
+        self.create_nexus_session_with_agent(name, cwd, tmux_name, worktree, SessionAgent::Claude)
+    }
+
+    pub fn create_nexus_session_with_agent(
+        &self,
+        name: &str,
+        cwd: &str,
+        tmux_name: &str,
+        worktree: Option<&WorktreeInfo>,
+        agent: SessionAgent,
     ) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = crate::time_utils::epoch_to_iso(crate::time_utils::now_epoch());
@@ -162,9 +176,19 @@ impl Database {
             "INSERT INTO sessions
                 (session_id, display_name, cwd, last_active, is_active,
                  tmux_name, status, created_by, created_at,
-                 worktree_branch, worktree_repo_root)
-             VALUES (?1, ?2, ?3, ?4, 1, ?5, 'active', 'nexus', ?6, ?7, ?8)",
-            params![id, name, cwd, now, tmux_name, now, wt_branch, wt_repo],
+                 worktree_branch, worktree_repo_root, agent)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, 'active', 'nexus', ?6, ?7, ?8, ?9)",
+            params![
+                id,
+                name,
+                cwd,
+                now,
+                tmux_name,
+                now,
+                wt_branch,
+                wt_repo,
+                agent.as_str()
+            ],
         )?;
 
         Ok(id)
@@ -334,7 +358,7 @@ impl Database {
                     s.last_active, s.is_active,
                     s.tmux_name, s.status, s.created_by, s.created_at,
                     s.claude_session_id,
-                    s.worktree_branch, s.worktree_repo_root
+                    s.agent, s.worktree_branch, s.worktree_repo_root
              FROM sessions s
              JOIN session_groups sg ON s.session_id = sg.session_id
              WHERE 1=1 {status_filter}
@@ -513,7 +537,7 @@ impl Database {
                     s.last_active, s.is_active,
                     s.tmux_name, s.status, s.created_by, s.created_at,
                     s.claude_session_id,
-                    s.worktree_branch, s.worktree_repo_root
+                    s.agent, s.worktree_branch, s.worktree_repo_root
              FROM sessions s
              WHERE s.session_id NOT IN (SELECT session_id FROM session_groups)
              {status_filter}
@@ -559,7 +583,7 @@ impl Database {
 // Free helpers
 // ---------------------------------------------------------------------------
 
-/// Map a rusqlite Row into a `SessionSummary`, reading 12 columns starting at column 0.
+/// Map a rusqlite Row into a `SessionSummary`, reading 13 columns starting at column 0.
 fn row_to_summary(row: &rusqlite::Row<'_>) -> SessionSummary {
     row_to_summary_at(row, 0)
 }
@@ -570,15 +594,16 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> SessionSummary {
 /// Column layout (relative to `start`):
 ///   0: session_id, 1: display_name, 2: cwd, 3: last_active, 4: is_active,
 ///   5: tmux_name, 6: status, 7: created_by, 8: created_at, 9: claude_session_id,
-///   10: worktree_branch, 11: worktree_repo_root
+///   10: agent, 11: worktree_branch, 12: worktree_repo_root
 fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
     let cwd_str: Option<String> = row.get(start + 2).unwrap_or(None);
     let status_str: String = row.get(start + 6).unwrap_or_default();
     let created_by_str: String = row.get(start + 7).unwrap_or_default();
 
     // Worktree: both columns must be present for a valid WorktreeInfo
-    let wt_branch: Option<String> = row.get(start + 10).unwrap_or(None);
-    let wt_repo: Option<String> = row.get(start + 11).unwrap_or(None);
+    let agent: String = row.get(start + 10).unwrap_or_else(|_| "claude".to_string());
+    let wt_branch: Option<String> = row.get(start + 11).unwrap_or(None);
+    let wt_repo: Option<String> = row.get(start + 12).unwrap_or(None);
     let worktree = match (wt_branch, wt_repo) {
         (Some(branch), Some(repo)) => Some(WorktreeInfo {
             branch,
@@ -598,6 +623,7 @@ fn row_to_summary_at(row: &rusqlite::Row<'_>, start: usize) -> SessionSummary {
         created_by: SessionOrigin::from_str(&created_by_str),
         created_at: row.get(start + 8).unwrap_or_default(),
         claude_session_id: row.get(start + 9).unwrap_or(None),
+        agent: SessionAgent::from_str(&agent),
         worktree,
         jsonl_path: None,
     }
@@ -632,6 +658,23 @@ mod tests {
         let ungrouped = db.get_ungrouped_sessions().unwrap();
         assert_eq!(ungrouped.len(), 1);
         assert_eq!(ungrouped[0], id);
+    }
+
+    #[test]
+    fn test_codex_agent_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_nexus_session_with_agent(
+            "codex-session",
+            "/tmp/project",
+            "codex-session",
+            None,
+            SessionAgent::Codex,
+        )
+        .unwrap();
+
+        let sessions = db.ungrouped_session_summaries(true).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].agent, SessionAgent::Codex);
     }
 
     #[test]

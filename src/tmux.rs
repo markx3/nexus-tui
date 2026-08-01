@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use color_eyre::eyre::{bail, WrapErr};
 use color_eyre::Result;
 
-use crate::types::{CursorPos, TmuxSessionInfo, TmuxSessionStatus};
+use crate::types::{CursorPos, SessionAgent, TmuxSessionInfo, TmuxSessionStatus};
 
 // ---------------------------------------------------------------------------
 // SendKeysArgs — type-safe tmux send-keys arguments
@@ -73,30 +73,48 @@ impl TmuxManager {
     /// Always passes `--allow-dangerously-skip-permissions` so the session's
     /// "bypass permissions" mode is selectable from inside Claude Code. This
     /// only makes the mode available; it does not enable it automatically.
+    #[cfg(test)]
     pub fn launch_claude_session(
         &self,
         name: &str,
         cwd: &str,
         resume_id: Option<&str>,
     ) -> Result<()> {
+        self.launch_agent_session(
+            name,
+            cwd,
+            SessionAgent::Claude,
+            resume_id.is_some(),
+            resume_id,
+        )
+    }
+
+    pub fn launch_agent_session(
+        &self,
+        name: &str,
+        cwd: &str,
+        agent: SessionAgent,
+        resume: bool,
+        claude_resume_id: Option<&str>,
+    ) -> Result<()> {
         Self::validate_target(name)?;
         let mut cmd = Command::new("tmux");
-        cmd.args(["-L", &self.socket_name]).args([
-            "new-session",
-            "-d",
-            "-s",
-            name,
-            "-c",
-            cwd,
-            "claude",
-            // Make "bypass permissions" mode selectable inside the session
-            // (via Shift+Tab) without forcing it on. This only enables the
-            // option; it does not skip permission checks by itself.
-            "--allow-dangerously-skip-permissions",
-        ]);
+        cmd.args(["-L", &self.socket_name])
+            .args(["new-session", "-d", "-s", name, "-c", cwd]);
 
-        if let Some(id) = resume_id {
-            cmd.args(["--resume", id]);
+        match agent {
+            SessionAgent::Claude => {
+                cmd.args(["claude", "--allow-dangerously-skip-permissions"]);
+                if let Some(id) = claude_resume_id {
+                    cmd.args(["--resume", id]);
+                }
+            }
+            SessionAgent::Codex => {
+                cmd.arg("codex");
+                if resume {
+                    cmd.args(["resume", "--last"]);
+                }
+            }
         }
 
         let status = cmd
@@ -106,7 +124,8 @@ impl TmuxManager {
 
         if !status.success() {
             bail!(
-                "tmux new-session (claude) exited with status {} for session '{}'",
+                "tmux new-session ({}) exited with status {} for session '{}'",
+                agent.as_str(),
                 status,
                 name
             );

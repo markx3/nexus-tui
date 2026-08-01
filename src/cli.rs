@@ -1,7 +1,13 @@
 use clap::{Parser, Subcommand};
 
+use crate::types::SessionAgent;
+
 #[derive(Parser)]
-#[command(name = "nexus", version, about = "TUI session manager for Claude Code")]
+#[command(
+    name = "nexus",
+    version,
+    about = "TUI session manager for Claude Code and Codex"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -37,6 +43,9 @@ pub enum Commands {
         /// Create an isolated git worktree for this session
         #[arg(short = 'w', long)]
         worktree: bool,
+        /// Coding agent to launch
+        #[arg(long, value_enum, default_value_t = SessionAgent::Claude)]
+        agent: SessionAgent,
     },
     /// Launch/resume a session in tmux
     Launch {
