@@ -1577,10 +1577,7 @@ impl App {
                     }
                 }
                 if self.tmux_available {
-                    if let Err(e) = self
-                        .tmux
-                        .launch_agent_session(&tmux_name, cwd, agent, false, None)
-                    {
+                    if let Err(e) = self.tmux.launch_agent_session(&tmux_name, cwd, agent, None) {
                         self.status_message =
                             Some((format!("tmux launch failed: {e}"), Instant::now()));
                         self.refresh_tree();
@@ -1796,13 +1793,10 @@ impl App {
                     );
                 }
 
-                if let Err(e) = self.tmux.launch_agent_session(
-                    &tmux_name,
-                    &cwd,
-                    session.agent,
-                    resume_id.is_some(),
-                    resume_id,
-                ) {
+                if let Err(e) =
+                    self.tmux
+                        .launch_agent_session(&tmux_name, &cwd, session.agent, resume_id)
+                {
                     self.status_message =
                         Some((format!("tmux launch failed: {e}"), Instant::now()));
                     return;

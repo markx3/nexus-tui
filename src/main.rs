@@ -132,7 +132,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
             }
 
             if tmux.is_available() {
-                tmux.launch_agent_session(&tmux_name, session_cwd, agent, false, None)?;
+                tmux.launch_agent_session(&tmux_name, session_cwd, agent, None)?;
             }
             println!("Created session '{}' ({})", name, id);
         }
@@ -152,13 +152,7 @@ fn run_cli(command: cli::Commands, json: bool) -> Result<()> {
                 .map(|s| s.agent)
                 .unwrap_or(types::SessionAgent::Claude);
             let resume_id = session.and_then(|s| s.agent_session_id.clone());
-            tmux.launch_agent_session(
-                &name,
-                &cwd,
-                agent,
-                resume_id.is_some(),
-                resume_id.as_deref(),
-            )?;
+            tmux.launch_agent_session(&name, &cwd, agent, resume_id.as_deref())?;
             db.update_session_status(&session_id, types::SessionStatus::Active)?;
             println!("Launched session '{}'", session_id);
         }
