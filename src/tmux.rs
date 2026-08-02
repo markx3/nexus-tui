@@ -48,8 +48,11 @@ fn agent_command(agent: SessionAgent, resume_id: Option<&str>) -> Result<AgentCo
             })
         }
         SessionAgent::Pi => {
+            // `--session-id` opens an exact project session when it exists and
+            // creates it otherwise. Nexus assigns and persists this ID before
+            // the first launch, avoiding post-launch session-file discovery.
             let args = resume_id
-                .map(|id| vec!["--session".to_string(), id.to_string()])
+                .map(|id| vec!["--session-id".to_string(), id.to_string()])
                 .unwrap_or_default();
             Ok(AgentCommand {
                 program: "pi",
@@ -1086,7 +1089,7 @@ session-c:win3:0:\n";
             agent_command(SessionAgent::Pi, Some("pi-id")).unwrap(),
             AgentCommand {
                 program: "pi",
-                args: vec!["--session".to_string(), "pi-id".to_string()],
+                args: vec!["--session-id".to_string(), "pi-id".to_string()],
             }
         );
     }

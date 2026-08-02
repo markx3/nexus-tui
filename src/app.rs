@@ -1564,13 +1564,15 @@ impl App {
             .db
             .next_unique_tmux_name(&tmux_name, None)
             .unwrap_or(tmux_name);
-        let snapshot = snapshot_agent_session_ids(agent, cwd);
+        let snapshot = (agent != SessionAgent::Pi).then(|| snapshot_agent_session_ids(agent, cwd));
         match self
             .db
             .create_nexus_session_with_agent(name, cwd, &tmux_name, worktree, agent)
         {
             Ok(id) => {
-                self.jsonl_snapshots.insert(id.clone(), snapshot);
+                if let Some(snapshot) = snapshot {
+                    self.jsonl_snapshots.insert(id.clone(), snapshot);
+                }
                 if let Some(gid) = group_id {
                     if let Err(e) = self.db.assign_session_to_group(&id, gid) {
                         self.status_message =
@@ -1578,7 +1580,11 @@ impl App {
                     }
                 }
                 if self.tmux_available {
-                    if let Err(e) = self.tmux.launch_agent_session(&tmux_name, cwd, agent, None) {
+                    let agent_session_id = (agent == SessionAgent::Pi).then_some(id.as_str());
+                    if let Err(e) =
+                        self.tmux
+                            .launch_agent_session(&tmux_name, cwd, agent, agent_session_id)
+                    {
                         self.status_message =
                             Some((format!("tmux launch failed: {e}"), Instant::now()));
                         self.refresh_tree();
