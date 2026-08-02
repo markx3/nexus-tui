@@ -680,6 +680,23 @@ mod tests {
     }
 
     #[test]
+    fn test_pi_agent_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_nexus_session_with_agent(
+            "pi-session",
+            "/tmp/project",
+            "pi-session",
+            None,
+            SessionAgent::Pi,
+        )
+        .unwrap();
+
+        let sessions = db.ungrouped_session_summaries(true).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].agent, SessionAgent::Pi);
+    }
+
+    #[test]
     fn test_unknown_agent_is_not_downgraded_to_claude() {
         let db = Database::open_in_memory().unwrap();
         let id = create_session(&db, "future-agent", "/tmp/project", "future-agent");

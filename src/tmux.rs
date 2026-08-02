@@ -47,6 +47,15 @@ fn agent_command(agent: SessionAgent, resume_id: Option<&str>) -> Result<AgentCo
                 args,
             })
         }
+        SessionAgent::Pi => {
+            let args = resume_id
+                .map(|id| vec!["--session".to_string(), id.to_string()])
+                .unwrap_or_default();
+            Ok(AgentCommand {
+                program: "pi",
+                args,
+            })
+        }
         SessionAgent::Unknown => bail!("cannot launch a session with an unknown coding agent"),
     }
 }
@@ -1056,6 +1065,28 @@ session-c:win3:0:\n";
             AgentCommand {
                 program: "codex",
                 args: vec!["resume".to_string(), "codex-id".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn test_agent_command_fresh_pi() {
+        assert_eq!(
+            agent_command(SessionAgent::Pi, None).unwrap(),
+            AgentCommand {
+                program: "pi",
+                args: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_agent_command_resumed_pi() {
+        assert_eq!(
+            agent_command(SessionAgent::Pi, Some("pi-id")).unwrap(),
+            AgentCommand {
+                program: "pi",
+                args: vec!["--session".to_string(), "pi-id".to_string()],
             }
         );
     }
